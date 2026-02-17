@@ -7,7 +7,9 @@
 //! the need for timeouts and making tests deterministic.
 
 use agent_client_protocol::{
-    AgentResponse, AgentSide, ClientRequest, JsonRpcMessage, Request, RequestId, Response, Side,
+    AgentResponse, AgentSide, ClientRequest, InitializeRequest, InitializeResponse, JsonRpcMessage,
+    NewSessionRequest, NewSessionResponse, ProtocolVersion, Request, RequestId, Response,
+    SessionId, Side,
 };
 use futures::FutureExt;
 use jcp::{Adapter, AgentOutgoingMessage, ClientOutgoingMessage, Config, Transport};
@@ -29,6 +31,7 @@ pub struct TestHarness {
     server: ChannelTransport,
     /// Next request ID for client requests
     next_request_id: u32,
+    next_session_id: u32,
 }
 
 /// Making sure future completes immedateley on a first poll.
@@ -53,6 +56,7 @@ impl TestHarness {
             client: downlink_test,
             server: uplink_test,
             next_request_id: 1,
+            next_session_id: 1,
         }
     }
 
@@ -85,6 +89,33 @@ impl TestHarness {
         id
     }
 
+    /// Sends a request from client side and then reply from the server side
+    pub fn client_request_and_response(&mut self, request: ClientRequest, response: AgentResponse) {
+        let request_id = self.client_send(request);
+        self.server_reply(request_id, response);
+
+        // Removing all transport messages from both sides
+        while self.client_recv_raw().is_some() {}
+        while self.server_recv_raw().is_some() {}
+    }
+
+    pub fn initialize(&mut self) {
+        self.client_request_and_response(
+            ClientRequest::InitializeRequest(InitializeRequest::new(1.into())),
+            AgentResponse::InitializeResponse(InitializeResponse::new(ProtocolVersion::V1)),
+        );
+    }
+
+    pub fn new_session(&mut self) -> SessionId {
+        let session_id = SessionId::new(format!("session-id-{}", self.next_session_id));
+        self.next_session_id += 1;
+        self.client_request_and_response(
+            ClientRequest::NewSessionRequest(NewSessionRequest::new("/test")),
+            AgentResponse::NewSessionResponse(NewSessionResponse::new(session_id.clone())),
+        );
+        session_id
+    }
+
     /// Send a raw JSON-RPC message from the client.
     ///
     /// Useful for testing edge cases or notifications.
@@ -97,17 +128,15 @@ impl TestHarness {
     }
 
     /// Receive a request that the adapter forwarded to the server.
-    ///
-    /// Returns the raw JSON value for flexible assertions.
-    pub fn server_recv(&mut self) -> Value {
-        self.server
-            .try_recv()
-            .expect("no message available from server")
+    pub fn server_recv_raw(&mut self) -> Option<Value> {
+        self.server.try_recv()
     }
 
     /// Receive a request that the adapter forwarded to the server, parsed as ClientRequest.
     pub fn server_recv_request(&mut self) -> (RequestId, ClientRequest) {
-        let value = self.server_recv();
+        let value = self
+            .server_recv_raw()
+            .expect("No message is delivered to a server");
 
         let id = match &value["id"] {
             Value::Number(n) => RequestId::Number(n.as_i64().unwrap()),
@@ -161,6 +190,13 @@ impl TestHarness {
             .expect("no message available for client");
 
         serde_json::from_value(value).expect("invalid JSON response")
+    }
+
+    /// Receive a response that the adapter forwarded to the client.
+    ///
+    /// Returns the parsed response for assertions.
+    pub fn client_recv_raw(&mut self) -> Option<Value> {
+        self.client.try_recv()
     }
 }
 

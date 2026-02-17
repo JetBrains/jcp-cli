@@ -1,8 +1,8 @@
 use agent_client_protocol::{
     self as acp, AgentNotification, AgentResponse, AgentSide, CLIENT_METHOD_NAMES, ClientRequest,
     ClientSide, ContentBlock, ContentChunk, JsonRpcMessage, NewSessionRequest, Notification,
-    OutgoingMessage, RawValue, Request, RequestId, Response, SessionId, SessionNotification,
-    SessionUpdate, Side, StopReason, TextContent,
+    OutgoingMessage, PromptResponse, RawValue, Request, RequestId, Response, SessionId,
+    SessionNotification, SessionUpdate, Side, StopReason, TextContent,
 };
 use futures::{FutureExt, Sink, Stream};
 use futures_util::{SinkExt, StreamExt};
@@ -170,7 +170,7 @@ pub struct Config {
 impl Config {
     pub fn new_session_meta(&self) -> NewSessionMeta {
         NewSessionMeta {
-            remote: RemoteInfo {
+            remote: GitRemoteInfo {
                 branch: self.branch.clone(),
                 url: self.git_url.clone(),
                 revision: self.revision.clone(),
@@ -184,7 +184,7 @@ impl Config {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct NewSessionMeta {
     #[serde(rename = "remote")]
-    pub remote: RemoteInfo,
+    pub remote: GitRemoteInfo,
 
     #[serde(rename = "jbAiToken")]
     pub ai_platform_token: String,
@@ -196,11 +196,11 @@ pub struct NewSessionMeta {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct EndTurnMeta {
     #[serde(rename = "target")]
-    pub target: RemoteInfo,
+    pub target: GitRemoteInfo,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct RemoteInfo {
+pub struct GitRemoteInfo {
     #[serde(rename = "branch")]
     pub branch: String,
 
@@ -296,23 +296,24 @@ where
         }
         while let Some(msg) = self.uplink.recv().now_or_never() {
             if let Some(msg) = msg? {
-                self.downlink.send(msg).await?;
+                self.handle_agent_message(msg).await?;
             }
         }
         Ok(())
     }
 
     /// Handles downlink messages (server -> client)
-    async fn handle_agent_message(&mut self, msg: JsonValue) -> io::Result<()> {
+    async fn handle_agent_message(&mut self, mut msg: JsonValue) -> io::Result<()> {
         let request_id = serde_json::from_value::<RequestId>(msg["id"].clone()).ok();
-        let result = serde_json::from_value::<AgentResponse>(msg["result"].clone()).ok();
 
-        if let Some((request_id, result)) = request_id.zip(result)
+        if let Some(request_id) = request_id
+            && msg["result"] != serde_json::Value::Null
             && let Some(session_id) = self.prompt_request_mapping.remove(&request_id)
         {
             // it is a response to a prompt request
-            if let AgentResponse::PromptResponse(r) = result
-                && r.stop_reason == StopReason::EndTurn
+            let r = serde_json::from_value::<PromptResponse>(msg["result"].take())
+                .map_err(to_io_invalid_data_err)?;
+            if r.stop_reason == StopReason::EndTurn
                 && let Some(meta) = r.meta
             {
                 let remote_info = serde_json::from_value::<EndTurnMeta>(JsonValue::Object(meta));
@@ -470,7 +471,7 @@ mod tests {
                 "supportsUserGitAuthFlow": false
             }"#,
             NewSessionMeta {
-                remote: RemoteInfo {
+                remote: GitRemoteInfo {
                     branch: "main".to_string(),
                     url: "https://example.com/repo.git".to_string(),
                     revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
@@ -492,7 +493,7 @@ mod tests {
                 }
             }"#,
             EndTurnMeta {
-                target: RemoteInfo {
+                target: GitRemoteInfo {
                     branch: "main".to_string(),
                     url: "https://example.com/repo.git".to_string(),
                     revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
