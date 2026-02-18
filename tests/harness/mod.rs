@@ -5,6 +5,15 @@
 //!
 //! The harness drives the adapter synchronously, eliminating
 //! the need for timeouts and making tests deterministic.
+//!
+//! The main methods to drive conversations between client and agent are:
+//! - [`TestHarness::client_recv()`]/[`TestHarness::client_send()`]
+//! - [`TestHarness::agent_recv()`]/[`TestHarness::agent_reply()`]
+//!
+//! Each method is send a JSON RPC message to the Adapter and makes sure that message is delivered
+//! to the counterparty. For example, when [`TestHarness::client_send()`] is successfully returns
+//! it means that sent message or it's derivatives (because Adapter can change/generate new messages)
+//! are available for reading using [`TestHarness::agent_recv()`].
 
 use agent_client_protocol::{
     self as acp, AgentResponse, ClientRequest, InitializeRequest, InitializeResponse,
@@ -111,17 +120,17 @@ impl TestHarness {
         session_id
     }
 
-    /// Receive a request that the adapter forwarded to the agent.
     pub fn try_agent_recv(&mut self) -> Option<JRpcMessage> {
         self.agent.try_recv().map(JRpcMessage)
     }
 
+    /// Reads a pending message on Agent side
     pub fn agent_recv(&mut self) -> JRpcMessage {
         self.try_agent_recv()
             .expect("No pending messages are available on the agent")
     }
 
-    /// Send a response from the agent back to the adapter.
+    /// Send a response from the Agent back to the Adapter.
     pub fn agent_reply(&mut self, id: RequestId, response: AgentResponse) {
         let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::new(
             id,
@@ -134,17 +143,12 @@ impl TestHarness {
         self.deliver_transport_messages();
     }
 
-    /// Receive a response that the adapter forwarded to the client.
-    ///
-    /// Returns the parsed response for assertions.
+    /// Reads a pending message on Client side
     pub fn client_recv(&mut self) -> JRpcMessage {
         self.try_client_recv()
             .expect("No pending messages are available on the client")
     }
 
-    /// Receive a response that the adapter forwarded to the client.
-    ///
-    /// Returns the parsed response for assertions.
     pub fn try_client_recv(&mut self) -> Option<JRpcMessage> {
         self.client.try_recv().map(JRpcMessage)
     }
