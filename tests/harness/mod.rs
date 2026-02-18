@@ -21,14 +21,14 @@ use tokio::sync::mpsc;
 /// Test harness for the ACP-JCP adapter.
 ///
 /// Provides an API for sending messages from the client side,
-/// receiving them on the server side, and vice versa.
+/// receiving them on the agent side, and vice versa.
 pub struct TestHarness {
     /// The adapter instance
     adapter: Adapter<ChannelTransport, ChannelTransport>,
     /// Transport endpoint for the client side (simulates IDE)
     client: ChannelTransport,
-    /// Transport endpoint for the server side (simulates JCP)
-    server: ChannelTransport,
+    /// Transport endpoint for the agent side (simulates JCP)
+    agent: ChannelTransport,
     /// Next request ID for client requests
     next_request_id: u32,
     next_session_id: u32,
@@ -54,7 +54,7 @@ impl TestHarness {
         Self {
             adapter,
             client: downlink_test,
-            server: uplink_test,
+            agent: uplink_test,
             next_request_id: 1,
             next_session_id: 1,
         }
@@ -81,17 +81,17 @@ impl TestHarness {
         id
     }
 
-    /// Sends a request from client side and then reply from the server side
+    /// Sends a request from client side and then reply from the agent side
     ///
     /// All pending messages will be removed from both transports, so that system will be in a ready state
     /// for new interactions to test
     pub fn client_request_and_response(&mut self, request: ClientRequest, response: AgentResponse) {
         let request_id = self.client_send(request);
-        self.server_reply(request_id, response);
+        self.agent_reply(request_id, response);
 
         // Removing all transport messages from both sides
         while self.try_client_recv().is_some() {}
-        while self.try_server_recv().is_some() {}
+        while self.try_agent_recv().is_some() {}
     }
 
     pub fn initialize(&mut self) {
@@ -111,25 +111,25 @@ impl TestHarness {
         session_id
     }
 
-    /// Receive a request that the adapter forwarded to the server.
-    pub fn try_server_recv(&mut self) -> Option<JRpcMessage> {
-        self.server.try_recv().map(JRpcMessage)
+    /// Receive a request that the adapter forwarded to the agent.
+    pub fn try_agent_recv(&mut self) -> Option<JRpcMessage> {
+        self.agent.try_recv().map(JRpcMessage)
     }
 
-    pub fn server_recv(&mut self) -> JRpcMessage {
-        self.try_server_recv()
+    pub fn agent_recv(&mut self) -> JRpcMessage {
+        self.try_agent_recv()
             .expect("No pending messages are available on the agent")
     }
 
-    /// Send a response from the server back to the adapter.
-    pub fn server_reply(&mut self, id: RequestId, response: AgentResponse) {
+    /// Send a response from the agent back to the adapter.
+    pub fn agent_reply(&mut self, id: RequestId, response: AgentResponse) {
         let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::new(
             id,
             Ok(response),
         )));
 
         let value = serde_json::to_value(&msg).unwrap();
-        let _ = now_or_panic!(self.server.send(value));
+        let _ = now_or_panic!(self.agent.send(value));
 
         self.deliver_transport_messages();
     }
