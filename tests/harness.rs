@@ -6,17 +6,16 @@
 //! The harness drives the adapter synchronously, eliminating
 //! the need for timeouts and making tests deterministic.
 
-use acp::{
-    AgentResponse, AgentSide, ClientRequest, InitializeRequest, InitializeResponse, JsonRpcMessage,
-    NewSessionRequest, NewSessionResponse, ProtocolVersion, Request, RequestId, Response,
-    SessionId, Side,
+use agent_client_protocol::{
+    self as acp, AgentResponse, AgentSide, ClientRequest, InitializeRequest, InitializeResponse,
+    JsonRpcMessage, NewSessionRequest, NewSessionResponse, ProtocolVersion, Request, RequestId,
+    Response, SessionId, Side,
 };
-use agent_client_protocol as acp;
 use futures::FutureExt;
 use jcp::{Adapter, AgentOutgoingMessage, ClientOutgoingMessage, Config, Transport};
 use serde::de::DeserializeOwned;
-use serde_json::{Value, value::RawValue};
-use std::{any::type_name, io, sync::Arc};
+use serde_json::{Value as JsonValue, value::RawValue};
+use std::io;
 use tokio::sync::mpsc;
 
 /// Test harness for the ACP-JCP adapter.
@@ -122,14 +121,14 @@ impl TestHarness {
     /// Useful for testing edge cases or notifications.
     #[allow(dead_code)]
     pub fn client_send_raw(&mut self, json: &str) {
-        let value: Value = serde_json::from_str(json).unwrap();
+        let value: JsonValue = serde_json::from_str(json).unwrap();
         let _ = now_or_panic!(self.client.send(value));
 
         self.deliver_transport_messages().unwrap();
     }
 
     /// Receive a request that the adapter forwarded to the server.
-    pub fn server_recv_raw(&mut self) -> Option<Value> {
+    pub fn server_recv_raw(&mut self) -> Option<JsonValue> {
         self.server.try_recv()
     }
 
@@ -140,8 +139,8 @@ impl TestHarness {
             .expect("No message is delivered to a server");
 
         let id = match &value["id"] {
-            Value::Number(n) => RequestId::Number(n.as_i64().unwrap()),
-            Value::String(s) => RequestId::Str(s.clone()),
+            JsonValue::Number(n) => RequestId::Number(n.as_i64().unwrap()),
+            JsonValue::String(s) => RequestId::Str(s.clone()),
             _ => panic!("invalid request id"),
         };
 
@@ -175,7 +174,7 @@ impl TestHarness {
     /// Send a raw JSON response from the server.
     #[allow(dead_code)]
     pub fn server_reply_raw(&mut self, json: &str) {
-        let value: Value = serde_json::from_str(json).unwrap();
+        let value: JsonValue = serde_json::from_str(json).unwrap();
         let _ = now_or_panic!(self.server.send(value));
 
         self.deliver_transport_messages().unwrap();
@@ -200,18 +199,18 @@ impl TestHarness {
     /// Receive a response that the adapter forwarded to the client.
     ///
     /// Returns the parsed response for assertions.
-    pub fn client_recv_raw(&mut self) -> Option<Value> {
+    pub fn client_recv_raw(&mut self) -> Option<JsonValue> {
         self.client.try_recv()
     }
 }
 
 pub struct ChannelTransport {
-    rx: mpsc::Receiver<Value>,
-    tx: mpsc::Sender<Value>,
+    rx: mpsc::Receiver<JsonValue>,
+    tx: mpsc::Sender<JsonValue>,
 }
 
 impl ChannelTransport {
-    pub fn new(rx: mpsc::Receiver<Value>, tx: mpsc::Sender<Value>) -> Self {
+    pub fn new(rx: mpsc::Receiver<JsonValue>, tx: mpsc::Sender<JsonValue>) -> Self {
         Self { rx, tx }
     }
 
@@ -227,26 +226,26 @@ impl ChannelTransport {
     /// Try to receive a message without blocking.
     ///
     /// Returns `Some(msg)` if a message is available, `None` otherwise.
-    pub fn try_recv(&mut self) -> Option<Value> {
+    pub fn try_recv(&mut self) -> Option<JsonValue> {
         self.rx.try_recv().ok()
     }
 }
 
 impl Transport for ChannelTransport {
-    async fn recv(&mut self) -> io::Result<Option<Value>> {
+    async fn recv(&mut self) -> io::Result<Option<JsonValue>> {
         Ok(self.rx.recv().await)
     }
 
-    async fn send(&mut self, msg: Value) -> io::Result<()> {
+    async fn send(&mut self, msg: JsonValue) -> io::Result<()> {
         self.tx.send(msg).await.map_err(io::Error::other)
     }
 }
 
-pub struct JRpcMessage(pub serde_json::Value);
+pub struct JRpcMessage(pub JsonValue);
 
 impl JRpcMessage {
     pub fn into_notification<T: DeserializeOwned>(mut self) -> io::Result<(String, T)> {
-        if self.0["id"] != Value::Null {
+        if self.0["id"] != JsonValue::Null {
             Err(io::Error::other(
                 "id field is present. This a request, not a notification",
             ))
@@ -271,7 +270,7 @@ impl JRpcMessage {
     ) -> io::Result<(RequestId, Result<T, acp::Error>)> {
         println!("{}", self.0);
         let request_id = serde_json::from_value::<RequestId>(self.0["id"].take())?;
-        let result = if self.0["error"] != Value::Null {
+        let result = if self.0["error"] != JsonValue::Null {
             Err(serde_json::from_value(self.0["error"].take())?)
         } else {
             // Assuming result is present

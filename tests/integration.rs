@@ -1,14 +1,13 @@
-mod harness;
-
-use acp::{
-    AgentNotification, AgentResponse, ClientNotification, ClientRequest, ContentBlock,
-    InitializeRequest, InitializeResponse, JsonRpcMessage, Meta, NewSessionRequest, PromptRequest,
-    PromptResponse, ProtocolVersion, Response, SessionNotification, StopReason, TextContent,
+use agent_client_protocol::{
+    self as acp, AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock,
+    InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse,
+    ProtocolVersion, Response, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
-use agent_client_protocol::{self as acp, CLIENT_METHOD_NAMES, SessionUpdate};
 use harness::TestHarness;
 use jcp::{Config, EndTurnMeta, GitRemoteInfo, NewSessionMeta};
 use serde_json::Value;
+
+mod harness;
 
 const TEST_GIT_URL: &str = "https://github.com/test/repo.git";
 const TEST_BRANCH: &str = "main";
@@ -127,7 +126,7 @@ async fn adapter_need_to_inject_chunk_with_git_info() {
             content.text
         );
     } else {
-        panic!("Exected agent message text chunk, got: {notification:?}")
+        panic!("Expected agent message text chunk, got: {notification:?}")
     }
 
     let (_, response) = harness

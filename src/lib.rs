@@ -1,13 +1,12 @@
 use agent_client_protocol::{
-    self as acp, AgentNotification, AgentResponse, AgentSide, CLIENT_METHOD_NAMES, ClientRequest,
-    ClientSide, ContentBlock, ContentChunk, JsonRpcMessage, NewSessionRequest, Notification,
-    OutgoingMessage, PromptResponse, RawValue, Request, RequestId, Response, SessionId,
-    SessionNotification, SessionUpdate, Side, StopReason, TextContent,
+    self as acp, AgentNotification, AgentSide, CLIENT_METHOD_NAMES, ClientRequest, ClientSide,
+    ContentBlock, ContentChunk, JsonRpcMessage, NewSessionRequest, Notification, OutgoingMessage,
+    PromptResponse, RawValue, Request, RequestId, Response, SessionId, SessionNotification,
+    SessionUpdate, Side, StopReason, TextContent,
 };
 use futures::{FutureExt, Sink, Stream};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use serde_json::Value as JsonValue;
 use std::{collections::HashMap, io};
 use tokio::{
@@ -308,7 +307,7 @@ where
         let request_id = serde_json::from_value::<RequestId>(msg["id"].clone()).ok();
 
         if let Some(request_id) = request_id
-            && msg["result"] != Value::Null
+            && msg["result"] != JsonValue::Null
             && let Some(session_id) = self.prompt_request_mapping.remove(&request_id)
         {
             // it is a response to a prompt request
