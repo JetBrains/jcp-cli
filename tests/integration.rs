@@ -46,7 +46,7 @@ fn test_adapter_forwards_initialize_request_to_server() {
     let (id, result) = harness
         .client_recv()
         .expect_response::<InitializeResponse>();
-    let result = result.expect("Expecting successfull InitializeResponse");
+    let result = result.expect("Expecting successful InitializeResponse");
 
     assert_eq!(id, request_id);
     assert_eq!(result, initialize_response);
