@@ -131,7 +131,7 @@ fn adapter_need_to_inject_chunk_with_git_info() {
     }
 
     let (_, response) = harness.client_recv().expect_response::<PromptResponse>();
-    let response = response.expect("Successfull response expected");
+    let response = response.expect("Successful response expected");
 
     assert_eq!(response.stop_reason, StopReason::EndTurn);
 }
