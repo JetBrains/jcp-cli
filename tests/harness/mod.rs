@@ -7,14 +7,14 @@
 //! the need for timeouts and making tests deterministic.
 
 use agent_client_protocol::{
-    self as acp, AgentResponse, AgentSide, ClientRequest, InitializeRequest, InitializeResponse,
+    self as acp, AgentResponse, ClientRequest, InitializeRequest, InitializeResponse,
     JsonRpcMessage, NewSessionRequest, NewSessionResponse, ProtocolVersion, Request, RequestId,
-    Response, SessionId, Side,
+    Response, SessionId,
 };
 use futures::FutureExt;
 use jcp::{Adapter, AgentOutgoingMessage, ClientOutgoingMessage, Config, Transport};
 use serde::de::DeserializeOwned;
-use serde_json::{Value as JsonValue, value::RawValue};
+use serde_json::Value as JsonValue;
 use std::io;
 use tokio::sync::mpsc;
 
@@ -60,14 +60,6 @@ impl TestHarness {
         }
     }
 
-    /// Process the all enqueued messages in the adapter.
-    ///
-    /// After this method was called it is safe to assume that all requests were sent to their
-    /// conterparties
-    fn deliver_transport_messages(&mut self) {
-        now_or_panic!(self.adapter.handle_enqueued_messages()).unwrap()
-    }
-
     /// Send a request from the client to the adapter.
     ///
     /// This simulates a client (IDE) sending a JSON-RPC request via stdin.
@@ -90,6 +82,9 @@ impl TestHarness {
     }
 
     /// Sends a request from client side and then reply from the server side
+    ///
+    /// All pending messages will be removed from both transports, so that system will be in a ready state
+    /// for new interactions to test
     pub fn client_request_and_response(&mut self, request: ClientRequest, response: AgentResponse) {
         let request_id = self.client_send(request);
         self.server_reply(request_id, response);
@@ -116,47 +111,14 @@ impl TestHarness {
         session_id
     }
 
-    /// Send a raw JSON-RPC message from the client.
-    ///
-    /// Useful for testing edge cases or notifications.
-    #[allow(dead_code)]
-    pub fn client_send_raw(&mut self, json: &str) {
-        let value: JsonValue = serde_json::from_str(json).unwrap();
-        let _ = now_or_panic!(self.client.send(value));
-
-        self.deliver_transport_messages();
-    }
-
     /// Receive a request that the adapter forwarded to the server.
     pub fn try_server_recv(&mut self) -> Option<JRpcMessage> {
         self.server.try_recv().map(JRpcMessage)
     }
 
-    /// Receive a request that the adapter forwarded to the server, parsed as ClientRequest.
-    pub fn server_recv_request(&mut self) -> (RequestId, ClientRequest) {
-        let value = self
-            .try_server_recv()
-            .expect("No message is delivered to a server")
-            .0;
-
-        let id = match &value["id"] {
-            JsonValue::Number(n) => RequestId::Number(n.as_i64().unwrap()),
-            JsonValue::String(s) => RequestId::Str(s.clone()),
-            _ => panic!("invalid request id"),
-        };
-
-        let method = value["method"].as_str().expect("missing method");
-        let params = value.get("params");
-
-        let request = AgentSide::decode_request(
-            method,
-            params
-                .map(|p| RawValue::from_string(p.to_string()).unwrap())
-                .as_deref(),
-        )
-        .expect("failed to decode request");
-
-        (id, request)
+    pub fn server_recv(&mut self) -> JRpcMessage {
+        self.try_server_recv()
+            .expect("No pending messages are available on the agent")
     }
 
     /// Send a response from the server back to the adapter.
@@ -172,20 +134,12 @@ impl TestHarness {
         self.deliver_transport_messages();
     }
 
-    /// Send a raw JSON response from the server.
-    #[allow(dead_code)]
-    pub fn server_reply_raw(&mut self, json: &str) {
-        let value: JsonValue = serde_json::from_str(json).unwrap();
-        let _ = now_or_panic!(self.server.send(value));
-
-        self.deliver_transport_messages();
-    }
-
     /// Receive a response that the adapter forwarded to the client.
     ///
     /// Returns the parsed response for assertions.
     pub fn client_recv(&mut self) -> JRpcMessage {
-        self.try_client_recv().expect("No message is available")
+        self.try_client_recv()
+            .expect("No pending messages are available on the client")
     }
 
     /// Receive a response that the adapter forwarded to the client.
@@ -193,6 +147,14 @@ impl TestHarness {
     /// Returns the parsed response for assertions.
     pub fn try_client_recv(&mut self) -> Option<JRpcMessage> {
         self.client.try_recv().map(JRpcMessage)
+    }
+
+    /// Process the all enqueued messages in the adapter.
+    ///
+    /// After this method was called it is safe to assume that all requests were sent to their
+    /// conterparties
+    fn deliver_transport_messages(&mut self) {
+        now_or_panic!(self.adapter.handle_enqueued_messages()).unwrap()
     }
 }
 

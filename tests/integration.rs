@@ -1,7 +1,7 @@
 use agent_client_protocol::{
-    AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock, InitializeRequest,
-    InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse, ProtocolVersion,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    AGENT_METHOD_NAMES, AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock,
+    InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse,
+    ProtocolVersion, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use harness::TestHarness;
 use jcp::{Config, EndTurnMeta, GitRemoteInfo, NewSessionMeta};
@@ -33,9 +33,9 @@ fn test_adapter_forwards_initialize_request_to_server() {
     let request_id = harness.client_send(request);
 
     // Server receives the forwarded request (no timeout needed)
-    let (recv_id, recv_request) = harness.server_recv_request();
+    let (method, recv_id, _) = harness.server_recv().expect_request::<InitializeRequest>();
     assert_eq!(recv_id, request_id);
-    assert!(matches!(recv_request, ClientRequest::InitializeRequest(_)));
+    assert_eq!(method, AGENT_METHOD_NAMES.initialize);
 
     let initialize_response = InitializeResponse::new(ProtocolVersion::V1);
     // Server sends response
@@ -61,18 +61,17 @@ fn test_adapter_injects_meta_into_new_session_request() {
     let mut harness = TestHarness::new(config);
 
     // Client sends newSession request (without meta)
-    harness.client_send(ClientRequest::NewSessionRequest(NewSessionRequest::new(
+    let request_id = harness.client_send(ClientRequest::NewSessionRequest(NewSessionRequest::new(
         "/test",
     )));
 
     // Server receives the request with injected meta (no timeout needed)
-    let (_, received) = harness.server_recv_request();
-    let ClientRequest::NewSessionRequest(r) = received else {
-        panic!("expected NewSessionRequest, got {:?}", received);
-    };
+    let (method, id, received) = harness.server_recv().expect_request::<NewSessionRequest>();
+    assert_eq!(method, AGENT_METHOD_NAMES.session_new);
+    assert_eq!(id, request_id);
 
     // Verify the meta was injected by deserializing it
-    let meta = r
+    let meta = received
         .meta
         .map(|m| serde_json::from_value::<NewSessionMeta>(serde_json::Value::Object(m)))
         .transpose()
