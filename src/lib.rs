@@ -7,6 +7,7 @@ use agent_client_protocol::{
 use futures::{FutureExt, Sink, Stream};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_json::Value as JsonValue;
 use std::{collections::HashMap, io};
 use tokio::{
@@ -303,23 +304,26 @@ where
     }
 
     /// Handles downlink messages (server -> client)
-    async fn handle_agent_message(&mut self, mut msg: JsonValue) -> io::Result<()> {
+    async fn handle_agent_message(&mut self, msg: JsonValue) -> io::Result<()> {
         let request_id = serde_json::from_value::<RequestId>(msg["id"].clone()).ok();
 
         if let Some(request_id) = request_id
-            && msg["result"] != serde_json::Value::Null
+            && msg["result"] != Value::Null
             && let Some(session_id) = self.prompt_request_mapping.remove(&request_id)
         {
             // it is a response to a prompt request
-            let r = serde_json::from_value::<PromptResponse>(msg["result"].take())
+            let r = serde_json::from_value::<PromptResponse>(msg["result"].clone())
                 .map_err(to_io_invalid_data_err)?;
             if r.stop_reason == StopReason::EndTurn
                 && let Some(meta) = r.meta
             {
                 let remote_info = serde_json::from_value::<EndTurnMeta>(JsonValue::Object(meta));
-                if let Ok(remote_info) = remote_info {
-                    let notification = create_session_update_notification(session_id, "Hello");
-
+                let end_turn_message = remote_info
+                    .ok()
+                    .map(|r| r.target)
+                    .and_then(git_end_turn_message);
+                if let Some(message) = end_turn_message {
+                    let notification = create_session_update_notification(session_id, message);
                     let value =
                         serde_json::to_value(&notification).map_err(to_io_invalid_data_err)?;
                     self.downlink.send(value).await?;
@@ -395,9 +399,25 @@ where
     }
 }
 
+fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
+    if !git_info.branch.is_empty() {
+        Some(format!(
+            "Results branch: {} ({})",
+            git_info.branch, git_info.url
+        ))
+    } else if git_info.revision.is_empty() {
+        Some(format!(
+            "Results commit: #{} ({})",
+            git_info.revision, git_info.url
+        ))
+    } else {
+        None
+    }
+}
+
 fn create_session_update_notification(
     session_id: SessionId,
-    message: &str,
+    message: impl Into<String>,
 ) -> JsonRpcMessage<AgentOutgoingMessage> {
     JsonRpcMessage::wrap(AgentOutgoingMessage::Notification(Notification {
         method: CLIENT_METHOD_NAMES.session_update.into(),

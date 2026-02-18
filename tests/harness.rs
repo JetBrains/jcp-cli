@@ -6,16 +6,17 @@
 //! The harness drives the adapter synchronously, eliminating
 //! the need for timeouts and making tests deterministic.
 
-use agent_client_protocol::{
+use acp::{
     AgentResponse, AgentSide, ClientRequest, InitializeRequest, InitializeResponse, JsonRpcMessage,
     NewSessionRequest, NewSessionResponse, ProtocolVersion, Request, RequestId, Response,
     SessionId, Side,
 };
+use agent_client_protocol as acp;
 use futures::FutureExt;
 use jcp::{Adapter, AgentOutgoingMessage, ClientOutgoingMessage, Config, Transport};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, value::RawValue};
-use std::io;
+use std::{any::type_name, io, sync::Arc};
 use tokio::sync::mpsc;
 
 /// Test harness for the ACP-JCP adapter.
@@ -192,6 +193,10 @@ impl TestHarness {
         serde_json::from_value(value).expect("invalid JSON response")
     }
 
+    pub fn client_recv2(&mut self) -> Option<JRpcMessage> {
+        self.client.try_recv().map(JRpcMessage)
+    }
+
     /// Receive a response that the adapter forwarded to the client.
     ///
     /// Returns the parsed response for assertions.
@@ -234,5 +239,44 @@ impl Transport for ChannelTransport {
 
     async fn send(&mut self, msg: Value) -> io::Result<()> {
         self.tx.send(msg).await.map_err(io::Error::other)
+    }
+}
+
+pub struct JRpcMessage(pub serde_json::Value);
+
+impl JRpcMessage {
+    pub fn into_notification<T: DeserializeOwned>(mut self) -> io::Result<(String, T)> {
+        if self.0["id"] != Value::Null {
+            Err(io::Error::other(
+                "id field is present. This a request, not a notification",
+            ))
+        } else {
+            let method_name = serde_json::from_value::<String>(self.0["method"].take())?;
+            let params = serde_json::from_value::<T>(self.0["params"].take())?;
+
+            Ok((method_name, params))
+        }
+    }
+
+    pub fn into_request<T: DeserializeOwned>(mut self) -> io::Result<(String, RequestId, T)> {
+        let request_id = serde_json::from_value(self.0["id"].take())?;
+        let method_name = serde_json::from_value(self.0["method"].take())?;
+        let params = serde_json::from_value(self.0["params"].take())?;
+
+        Ok((method_name, request_id, params))
+    }
+
+    pub fn into_response<T: DeserializeOwned>(
+        mut self,
+    ) -> io::Result<(RequestId, Result<T, acp::Error>)> {
+        println!("{}", self.0);
+        let request_id = serde_json::from_value::<RequestId>(self.0["id"].take())?;
+        let result = if self.0["error"] != Value::Null {
+            Err(serde_json::from_value(self.0["error"].take())?)
+        } else {
+            // Assuming result is present
+            Ok(serde_json::from_value(self.0["result"].take())?)
+        };
+        Ok((request_id, result))
     }
 }
