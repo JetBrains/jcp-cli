@@ -64,8 +64,8 @@ impl TestHarness {
     ///
     /// After this method was called it is safe to assume that all requests were sent to their
     /// conterparties
-    fn deliver_transport_messages(&mut self) -> io::Result<()> {
-        now_or_panic!(self.adapter.handle_enqueued_messages())
+    fn deliver_transport_messages(&mut self) {
+        now_or_panic!(self.adapter.handle_enqueued_messages()).unwrap()
     }
 
     /// Send a request from the client to the adapter.
@@ -84,7 +84,7 @@ impl TestHarness {
         let value = serde_json::to_value(&msg).unwrap();
         let _ = now_or_panic!(self.client.send(value));
 
-        self.deliver_transport_messages().unwrap();
+        self.deliver_transport_messages();
 
         id
     }
@@ -95,8 +95,8 @@ impl TestHarness {
         self.server_reply(request_id, response);
 
         // Removing all transport messages from both sides
-        while self.client_recv_raw().is_some() {}
-        while self.server_recv_raw().is_some() {}
+        while self.try_client_recv().is_some() {}
+        while self.try_server_recv().is_some() {}
     }
 
     pub fn initialize(&mut self) {
@@ -124,19 +124,20 @@ impl TestHarness {
         let value: JsonValue = serde_json::from_str(json).unwrap();
         let _ = now_or_panic!(self.client.send(value));
 
-        self.deliver_transport_messages().unwrap();
+        self.deliver_transport_messages();
     }
 
     /// Receive a request that the adapter forwarded to the server.
-    pub fn server_recv_raw(&mut self) -> Option<JsonValue> {
-        self.server.try_recv()
+    pub fn try_server_recv(&mut self) -> Option<JRpcMessage> {
+        self.server.try_recv().map(JRpcMessage)
     }
 
     /// Receive a request that the adapter forwarded to the server, parsed as ClientRequest.
     pub fn server_recv_request(&mut self) -> (RequestId, ClientRequest) {
         let value = self
-            .server_recv_raw()
-            .expect("No message is delivered to a server");
+            .try_server_recv()
+            .expect("No message is delivered to a server")
+            .0;
 
         let id = match &value["id"] {
             JsonValue::Number(n) => RequestId::Number(n.as_i64().unwrap()),
@@ -168,7 +169,7 @@ impl TestHarness {
         let value = serde_json::to_value(&msg).unwrap();
         let _ = now_or_panic!(self.server.send(value));
 
-        self.deliver_transport_messages().unwrap();
+        self.deliver_transport_messages();
     }
 
     /// Send a raw JSON response from the server.
@@ -177,30 +178,21 @@ impl TestHarness {
         let value: JsonValue = serde_json::from_str(json).unwrap();
         let _ = now_or_panic!(self.server.send(value));
 
-        self.deliver_transport_messages().unwrap();
+        self.deliver_transport_messages();
     }
 
     /// Receive a response that the adapter forwarded to the client.
     ///
     /// Returns the parsed response for assertions.
-    pub fn client_recv<T: DeserializeOwned>(&mut self) -> Response<T> {
-        let value = self
-            .client
-            .try_recv()
-            .expect("no message available for client");
-
-        serde_json::from_value(value).expect("invalid JSON response")
+    pub fn client_recv(&mut self) -> JRpcMessage {
+        self.try_client_recv().expect("No message is available")
     }
 
-    pub fn client_recv2(&mut self) -> Option<JRpcMessage> {
+    /// Receive a response that the adapter forwarded to the client.
+    ///
+    /// Returns the parsed response for assertions.
+    pub fn try_client_recv(&mut self) -> Option<JRpcMessage> {
         self.client.try_recv().map(JRpcMessage)
-    }
-
-    /// Receive a response that the adapter forwarded to the client.
-    ///
-    /// Returns the parsed response for assertions.
-    pub fn client_recv_raw(&mut self) -> Option<JsonValue> {
-        self.client.try_recv()
     }
 }
 
@@ -241,41 +233,97 @@ impl Transport for ChannelTransport {
     }
 }
 
+/// This is a simple wrapper around json value that simplifies tests by
+/// providing typical conversion and expectaction method for JSON RPC messages.
 pub struct JRpcMessage(pub JsonValue);
 
 impl JRpcMessage {
-    pub fn into_notification<T: DeserializeOwned>(mut self) -> io::Result<(String, T)> {
-        if self.0["id"] != JsonValue::Null {
-            Err(io::Error::other(
-                "id field is present. This a request, not a notification",
-            ))
-        } else {
-            let method_name = serde_json::from_value::<String>(self.0["method"].take())?;
-            let params = serde_json::from_value::<T>(self.0["params"].take())?;
-
-            Ok((method_name, params))
-        }
+    pub fn expect_notification<T: DeserializeOwned>(self) -> (String, T) {
+        assert!(
+            self.0["id"] == JsonValue::Null,
+            "Expected notification (no id), got request: {}",
+            self.0
+        );
+        (self.read_field("method"), self.read_field("params"))
     }
 
-    pub fn into_request<T: DeserializeOwned>(mut self) -> io::Result<(String, RequestId, T)> {
-        let request_id = serde_json::from_value(self.0["id"].take())?;
-        let method_name = serde_json::from_value(self.0["method"].take())?;
-        let params = serde_json::from_value(self.0["params"].take())?;
-
-        Ok((method_name, request_id, params))
+    pub fn expect_request<T: DeserializeOwned>(self) -> (String, RequestId, T) {
+        assert!(
+            self.0["id"] != JsonValue::Null,
+            "Expected request, but no id is present on request: {}",
+            self.0
+        );
+        let request_id = self.read_field("id");
+        let method_name = self.read_field("method");
+        let params = self.read_field("params");
+        (method_name, request_id, params)
     }
 
-    pub fn into_response<T: DeserializeOwned>(
-        mut self,
-    ) -> io::Result<(RequestId, Result<T, acp::Error>)> {
-        println!("{}", self.0);
-        let request_id = serde_json::from_value::<RequestId>(self.0["id"].take())?;
+    pub fn expect_response<T: DeserializeOwned>(self) -> (RequestId, Result<T, acp::Error>) {
+        let request_id = self.read_field("id");
         let result = if self.0["error"] != JsonValue::Null {
-            Err(serde_json::from_value(self.0["error"].take())?)
+            Err(self.read_field("error"))
         } else {
-            // Assuming result is present
-            Ok(serde_json::from_value(self.0["result"].take())?)
+            Ok(self.read_field("result"))
         };
-        Ok((request_id, result))
+        (request_id, result)
+    }
+
+    fn read_field<T: DeserializeOwned>(&self, field_name: &str) -> T {
+        serde_json::from_value(self.0[field_name].clone())
+            .unwrap_or_else(|e| panic!("{e}\nJSON: {}", self.0))
+    }
+}
+
+mod harness_test {
+    use crate::harness::JRpcMessage;
+    use agent_client_protocol::{self as acp, RequestId};
+    use serde_json::json;
+
+    #[test]
+    fn jprc_into_notification() {
+        let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "method": "foo", "params": [0, 1]} });
+        let (method, param) = msg.expect_notification::<Vec<u32>>();
+        assert_eq!(method, "foo");
+        assert_eq!(param, vec![0, 1]);
+    }
+
+    #[test]
+    #[should_panic = "Expected notification (no id), got request"]
+    fn jprc_into_notification_for_request() {
+        let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "method": "foo", "result": 3} });
+        msg.expect_notification::<u32>();
+    }
+
+    #[test]
+    fn jprc_into_request() {
+        let msg =
+            JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "method": "foo", "params": [0, 1]} });
+        let (method, id, params) = msg.expect_request::<Vec<u32>>();
+        assert_eq!(method, "foo");
+        assert_eq!(params, vec![0, 1]);
+        assert_eq!(id, RequestId::Number(5));
+    }
+
+    #[test]
+    fn jprc_into_response_ok() {
+        let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "result": 42} });
+        let result = msg.expect_response::<u32>();
+        assert_eq!(result, (RequestId::Number(5), Ok(42)));
+    }
+
+    #[test]
+    fn jprc_into_response_err() {
+        let msg = JRpcMessage(
+            json! { {"jsonrpc": "2.0", "id": 5, "error": {"code": -32600, "message": "Invalid Request"}} },
+        );
+        let result = msg.expect_response::<u32>();
+        assert_eq!(
+            result,
+            (
+                RequestId::Number(5),
+                Err(acp::Error::new(-32600, "Invalid Request"))
+            )
+        );
     }
 }

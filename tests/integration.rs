@@ -1,7 +1,7 @@
 use agent_client_protocol::{
-    self as acp, AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock,
-    InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse,
-    ProtocolVersion, Response, SessionNotification, SessionUpdate, StopReason, TextContent,
+    AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock, InitializeRequest,
+    InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse, ProtocolVersion,
+    SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use harness::TestHarness;
 use jcp::{Config, EndTurnMeta, GitRemoteInfo, NewSessionMeta};
@@ -24,8 +24,8 @@ fn test_config() -> Config {
     }
 }
 
-#[tokio::test]
-async fn test_adapter_forwards_initialize_request_to_server() {
+#[test]
+fn test_adapter_forwards_initialize_request_to_server() {
     let mut harness = TestHarness::new(test_config());
 
     // Client sends initialize request
@@ -43,8 +43,10 @@ async fn test_adapter_forwards_initialize_request_to_server() {
     harness.server_reply(recv_id, response);
 
     // Client receives the response (no timeout needed)
-    let result = harness.client_recv::<InitializeResponse>();
-    let Response::Result { id, result } = result else {
+    let (id, result) = harness
+        .client_recv()
+        .expect_response::<InitializeResponse>();
+    let Ok(result) = result else {
         panic!("expected InitializeResponse, got {:?}", result);
     };
 
@@ -52,8 +54,8 @@ async fn test_adapter_forwards_initialize_request_to_server() {
     assert_eq!(result, initialize_response);
 }
 
-#[tokio::test]
-async fn test_adapter_injects_meta_into_new_session_request() {
+#[test]
+fn test_adapter_injects_meta_into_new_session_request() {
     let config = test_config();
     let expected_meta = config.new_session_meta();
     let mut harness = TestHarness::new(config);
@@ -79,8 +81,8 @@ async fn test_adapter_injects_meta_into_new_session_request() {
     assert_eq!(meta, Some(expected_meta));
 }
 
-#[tokio::test]
-async fn adapter_need_to_inject_chunk_with_git_info() {
+#[test]
+fn adapter_need_to_inject_chunk_with_git_info() {
     let mut harness = TestHarness::new(test_config());
 
     harness.initialize();
@@ -107,11 +109,10 @@ async fn adapter_need_to_inject_chunk_with_git_info() {
     );
 
     let (method_name, notification) = harness
-        .client_recv2()
-        .unwrap()
-        .into_notification::<SessionNotification>()
-        .unwrap();
+        .client_recv()
+        .expect_notification::<SessionNotification>();
     assert_eq!(method_name, CLIENT_METHOD_NAMES.session_update);
+
     if let SessionUpdate::AgentMessageChunk(chunk) = &notification.update
         && let ContentBlock::Text(content) = &chunk.content
     {
@@ -129,13 +130,10 @@ async fn adapter_need_to_inject_chunk_with_git_info() {
         panic!("Expected agent message text chunk, got: {notification:?}")
     }
 
-    let (_, response) = harness
-        .client_recv2()
-        .unwrap()
-        .into_response::<PromptResponse>()
-        .unwrap();
+    let (_, response) = harness.client_recv().expect_response::<PromptResponse>();
+    let response = response.expect("Successfull response expected");
 
-    println!("Agent response: {response:?}");
+    assert_eq!(response.stop_reason, StopReason::EndTurn);
 }
 
 fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
@@ -143,58 +141,4 @@ fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
         panic!("Unexpected json type")
     };
     PromptResponse::new(StopReason::EndTurn).meta(json_meta)
-}
-
-mod harness_tests {
-    use super::*;
-    use crate::harness::JRpcMessage;
-    use acp::RequestId;
-    use serde_json::json;
-
-    #[test]
-    fn into_notification() {
-        let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "method": "foo", "params": [0, 1]} });
-        let (method, param) = msg.into_notification::<Vec<u32>>().unwrap();
-        assert_eq!(method, "foo");
-        assert_eq!(param, vec![0, 1]);
-    }
-
-    #[test]
-    #[should_panic = "id field is present"]
-    fn into_notification_for_request() {
-        let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "method": "foo", "result": 3} });
-        msg.into_notification::<u32>().unwrap();
-    }
-
-    #[test]
-    fn into_request() {
-        let msg =
-            JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "method": "foo", "params": [0, 1]} });
-        let (method, id, params) = msg.into_request::<Vec<u32>>().unwrap();
-        assert_eq!(method, "foo");
-        assert_eq!(params, vec![0, 1]);
-        assert_eq!(id, RequestId::Number(5));
-    }
-
-    #[test]
-    fn into_response_ok() {
-        let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "result": 42} });
-        let result = msg.into_response::<u32>().unwrap();
-        assert_eq!(result, (RequestId::Number(5), Ok(42)));
-    }
-
-    #[test]
-    fn into_response_err() {
-        let msg = JRpcMessage(
-            json! { {"jsonrpc": "2.0", "id": 5, "error": {"code": -32600, "message": "Invalid Request"}} },
-        );
-        let result = msg.into_response::<u32>().unwrap();
-        assert_eq!(
-            result,
-            (
-                RequestId::Number(5),
-                Err(acp::Error::new(-32600, "Invalid Request"))
-            )
-        );
-    }
 }
