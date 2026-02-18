@@ -2,18 +2,6 @@
 //!
 //! Provides an API for testing the adapter without dealing with
 //! websocket setup, channels, and async coordination directly.
-//!
-//! The harness drives the adapter synchronously, eliminating
-//! the need for timeouts and making tests deterministic.
-//!
-//! The main methods to drive conversations between client and agent are:
-//! - [`TestHarness::client_recv()`]/[`TestHarness::client_send()`]
-//! - [`TestHarness::agent_recv()`]/[`TestHarness::agent_reply()`]
-//!
-//! Each method is send a JSON RPC message to the Adapter and makes sure that message is delivered
-//! to the counterparty. For example, when [`TestHarness::client_send()`] is successfully returns
-//! it means that sent message or it's derivatives (because Adapter can change/generate new messages)
-//! are available for reading using [`TestHarness::agent_recv()`].
 
 use agent_client_protocol::{
     self as acp, AgentResponse, ClientRequest, InitializeRequest, InitializeResponse,
@@ -31,6 +19,19 @@ use tokio::sync::mpsc;
 ///
 /// Provides an API for sending messages from the client side,
 /// receiving them on the agent side, and vice versa.
+///
+/// The harness drives the adapter synchronously, eliminating
+/// the need for timeouts and making tests deterministic.
+///
+/// The main methods to drive conversations between client and agent are:
+///
+/// - [`TestHarness::client_recv()`]/[`TestHarness::client_send()`]
+/// - [`TestHarness::agent_recv()`]/[`TestHarness::agent_reply()`]
+///
+/// Each method is send a JSON RPC message to the Adapter and makes sure that message is delivered
+/// to the counterparty. For example, when [`TestHarness::client_send()`] is successfully returns
+/// it means that sent message or it's derivatives (because Adapter can change/generate new messages)
+/// are available for reading using [`TestHarness::agent_recv()`].
 pub struct TestHarness {
     /// The adapter instance
     adapter: Adapter<ChannelTransport, ChannelTransport>,
