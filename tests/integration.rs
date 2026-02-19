@@ -1,3 +1,14 @@
+//! Integrations tests.
+//!
+//! Although Adapter uses tokio runtime to drive both transports (uplink/downlink) concurrently,
+//! we intentionally use std `#[test]` here instead of `#[tokio:test]`. Adapter is designed to be tested
+//! in synchronous manner without awaiting (see. [`TestHarness`] docs).
+//!
+//! It means that we can not do `.awaits` in tests, which is intentional. Also some adidtional
+//! tokio facilities which requires Tokio runtime to be present might be unavailable (like [`tokio::time::sleep()`]).
+//! If this is the case, it is possible to use `#[tokio:test]`, but additional caution needs to be taken
+//! to keep tests fast and reliable.
+
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock,
     InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse,
@@ -13,16 +24,6 @@ const TEST_GIT_URL: &str = "https://github.com/test/repo.git";
 const TEST_BRANCH: &str = "main";
 const TEST_REVISION: &str = "abc123";
 const TEST_TOKEN: &str = "test-token";
-
-fn test_config() -> Config {
-    Config {
-        git_url: TEST_GIT_URL.into(),
-        branch: TEST_BRANCH.into(),
-        revision: TEST_REVISION.into(),
-        ai_platform_token: TEST_TOKEN.into(),
-        supports_user_git_auth_flow: false,
-    }
-}
 
 #[test]
 fn test_adapter_forwards_initialize_request_to_server() {
@@ -140,4 +141,14 @@ fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
         panic!("Unexpected json type")
     };
     PromptResponse::new(StopReason::EndTurn).meta(json_meta)
+}
+
+fn test_config() -> Config {
+    Config {
+        git_url: TEST_GIT_URL.into(),
+        branch: TEST_BRANCH.into(),
+        revision: TEST_REVISION.into(),
+        ai_platform_token: TEST_TOKEN.into(),
+        supports_user_git_auth_flow: false,
+    }
 }
