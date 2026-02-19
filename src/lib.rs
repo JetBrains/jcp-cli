@@ -404,7 +404,7 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
             "Results branch: {} ({})",
             git_info.branch, git_info.url
         ))
-    } else if git_info.revision.is_empty() {
+    } else if !git_info.revision.is_empty() {
         Some(format!(
             "Results commit: #{} ({})",
             git_info.revision, git_info.url
@@ -548,6 +548,36 @@ mod tests {
         if !matches!(request, ClientRequest::InitializeRequest(..)) {
             panic!("Unexpected request: {:?}", request);
         }
+    }
+
+    #[test]
+    fn check_git_finish_message() {
+        let url = "http://github.com/url";
+        let branch = "master";
+        let revision = "2b7a25df823dc7d8f56f8ce7c2d2dac391cea9c2";
+
+        let msg = git_end_turn_message(GitRemoteInfo {
+            branch: branch.to_owned(),
+            url: url.to_owned(),
+            revision: revision.to_owned(),
+        })
+        .unwrap();
+        assert!(msg.contains(url), "Message: {msg} does not contains {url}",);
+        assert!(
+            msg.contains(branch),
+            "Message: '{msg}' does not contain: {branch}",
+        );
+
+        let msg = git_end_turn_message(GitRemoteInfo {
+            branch: "".to_owned(),
+            url: url.to_owned(),
+            revision: revision.to_owned(),
+        })
+        .unwrap();
+        assert!(
+            msg.contains(revision),
+            "Message: '{msg}' does not contain: {branch}",
+        );
     }
 
     fn check_serialization<T>(json: &str, expected_value: T)
