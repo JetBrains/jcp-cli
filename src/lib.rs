@@ -268,23 +268,55 @@ impl Adapter {
     /// Returns `true` if there are more messages can be handled
     /// Returns `false` when both channels are closed (end of communication).
     pub async fn handle_next_message(&mut self) -> io::Result<bool> {
-        tokio::select! {
+        use Status::*;
+        enum Status {
+            AgentTerminated,
+            ClientTerminated,
+            MessageProcessed,
+        }
+
+        let result = tokio::select! {
+            // We don't care about message processing order fairness, but random selection
+            // makes tests non deterministic, hence biased.
+            biased;
             msg = self.client.recv() => {
                 if let Some(msg) = msg? {
-                    let _ = self.traffic_log.write(&msg).await;
                     self.handle_client_message(msg).await?;
-                    return Ok(true)
+                    MessageProcessed
+                } else {
+                    ClientTerminated
                 }
             }
             msg = self.agent.recv() => {
                 if let Some(msg) = msg? {
-                    let _ = self.traffic_log.write(&msg).await;
                     self.handle_agent_message(msg).await?;
-                    return Ok(true)
+                    MessageProcessed
+                } else {
+                    AgentTerminated
+                }
+            }
+        };
+
+        // If one of the transports reported EOF, we still need to process another one
+        match result {
+            MessageProcessed => Ok(true),
+            ClientTerminated => {
+                if let Some(msg) = self.agent.recv().await? {
+                    self.handle_agent_message(msg).await?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            AgentTerminated => {
+                if let Some(msg) = self.client.recv().await? {
+                    self.handle_client_message(msg).await?;
+                    Ok(true)
+                } else {
+                    Ok(false)
                 }
             }
         }
-        Ok(false)
     }
 
     /// Handles all enqueued messages in the transport
@@ -292,21 +324,18 @@ impl Adapter {
     /// Should be used for tests only, because using this method in a loop will cause CPU spin.
     /// Use [`Self::handle_next_message()`] instead
     pub async fn handle_enqueued_messages(&mut self) -> io::Result<()> {
-        while let Some(msg) = self.client.recv().now_or_never() {
-            if let Some(msg) = msg? {
-                self.handle_client_message(msg).await?;
-            }
+        while let Some(msg) = self.client.recv().now_or_never().transpose()?.flatten() {
+            self.handle_client_message(msg).await?;
         }
-        while let Some(msg) = self.agent.recv().now_or_never() {
-            if let Some(msg) = msg? {
-                self.handle_agent_message(msg).await?;
-            }
+        while let Some(msg) = self.agent.recv().now_or_never().transpose()?.flatten() {
+            self.handle_agent_message(msg).await?;
         }
         Ok(())
     }
 
-    /// Handles downlink messages (server -> client)
     async fn handle_agent_message(&mut self, msg: JsonValue) -> io::Result<()> {
+        let _ = self.traffic_log.write(&msg).await;
+
         let request_id = serde_json::from_value::<RequestId>(msg["id"].clone()).ok();
 
         if let Some(request_id) = request_id
@@ -336,8 +365,9 @@ impl Adapter {
         self.client.send(msg).await
     }
 
-    /// Handles a message from the client (uplink: client -> server)
     async fn handle_client_message(&mut self, msg: JsonValue) -> io::Result<()> {
+        let _ = self.traffic_log.write(&msg).await;
+
         // This is ugly hack, but we need to serialize here back to string, otherwise
         // we can not use AgentSide::decode_request()
         let msg_str = msg.to_string();
@@ -474,7 +504,7 @@ fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::{AgentSide, ClientRequest, Side};
+    use agent_client_protocol::{AgentSide, ClientRequest, LoadSessionRequest, Side};
     use drop_check::{IntersperceExt, cancellations};
     use serde::de::DeserializeOwned;
     use serde_json::Value;
@@ -592,6 +622,50 @@ mod tests {
         assert_eq!(deserialized, expected_value);
         let serialized = serde_json::to_value(deserialized).unwrap();
         assert_eq!(json, serialized);
+    }
+
+    #[tokio::test]
+    async fn adapter_should_consume_all_messages() {
+        const MESSAGE_REPETITIONS: usize = 10;
+
+        let downlink = {
+            let request = ClientRequest::LoadSessionRequest(LoadSessionRequest::new("1", "/"));
+            let mut message = serde_json::to_string(&request).unwrap();
+            message.push('\n');
+
+            IoTransport::new(
+                Cursor::new(message.repeat(MESSAGE_REPETITIONS).into_bytes()),
+                vec![],
+            )
+        };
+
+        let uplink = {
+            let request = ClientRequest::LoadSessionRequest(LoadSessionRequest::new("1", "/"));
+            let mut message = serde_json::to_string(&request).unwrap();
+            message.push('\n');
+
+            IoTransport::new(
+                Cursor::new(message.repeat(MESSAGE_REPETITIONS).into_bytes()),
+                vec![],
+            )
+        };
+
+        let mut adapter = Adapter::new(
+            Err("No config".to_string()),
+            Box::new(downlink),
+            Box::new(uplink),
+        );
+
+        let mut i = 0;
+        while adapter.handle_next_message().await.unwrap() {
+            i += 1;
+        }
+
+        assert_eq!(
+            i,
+            MESSAGE_REPETITIONS * 2,
+            "{MESSAGE_REPETITIONS} should be processed from each of the side (agent, client)"
+        );
     }
 
     #[test]
