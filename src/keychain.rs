@@ -7,15 +7,6 @@
 
 use std::io;
 
-#[cfg(target_os = "macos")]
-pub use macos::platform_keychain;
-
-#[cfg(target_os = "linux")]
-pub use linux::platform_keychain;
-
-#[cfg(target_os = "windows")]
-pub use win32::platform_keychain;
-
 /// Account name for storing the OAuth refresh token
 const REFRESH_TOKEN_KEY: &str = "refresh-token";
 
@@ -45,6 +36,30 @@ pub trait SecretBackend {
     fn delete_secret(&self, name: &str) -> io::Result<()>;
 }
 
+pub fn active_keychain() -> Box<dyn SecretBackend> {
+    #[cfg(target_os = "macos")]
+    use macos::platform_keychain;
+
+    #[cfg(target_os = "linux")]
+    use linux::platform_keychain;
+
+    #[cfg(target_os = "windows")]
+    use win32::platform_keychain;
+
+    // This conditional compilation is little bit cryptic, but it does
+    // make sure that whatever profile we building (release/debug) we don't
+    // get dead code warning, without any explicit `#[allow(dead_code)]`
+    #[cfg(debug_assertions)]
+    if cfg!(debug_assertions) {
+        Box::new(file::FileBackend::new())
+    } else {
+        platform_keychain()
+    }
+
+    #[cfg(not(debug_assertions))]
+    platform_keychain()
+}
+
 #[cfg(target_os = "windows")]
 mod win32 {
     use std::ffi::{OsString, c_void};
@@ -60,17 +75,6 @@ mod win32 {
     use windows::core::{PCWSTR, PWSTR};
 
     pub fn platform_keychain() -> Box<dyn SecretBackend> {
-        // This conditional compilation is little bit cryptic, but it does
-        // make sure that whatever profile we building (release/debug) we don't
-        // get dead code warning, without any explicit `#[allow(dead_code)]`
-        #[cfg(debug_assertions)]
-        if cfg!(debug_assertions) {
-            Box::new(file::FileBackend::new())
-        } else {
-            Box::new(WindowsCredentialLockerBackend)
-        }
-
-        #[cfg(not(debug_assertions))]
         Box::new(WindowsCredentialLockerBackend)
     }
 
@@ -104,7 +108,7 @@ mod win32 {
 
         fn write_secret(&self, name: &str, value: &str) -> io::Result<()> {
             // CredentialBlob is a `*mut u8`, which is mutable. We technically can just force-cast
-            // the value, but that is undefined behaviour from the persppective of the type system.
+            // the value, but that is undefined behaviour from the perspective of the type system.
             let mut value_blob = Vec::from(value);
             let mut target_name = target_name(name);
 
@@ -157,20 +161,13 @@ mod linux {
     use std::sync::LazyLock;
 
     use super::*;
-    use libsecret::*;
+    use libsecret::{
+        COLLECTION_DEFAULT, Schema, SchemaAttributeType, SchemaFlags, password_clear_sync,
+        password_lookup_sync, password_store_sync,
+    };
+
 
     pub fn platform_keychain() -> Box<dyn SecretBackend> {
-        // This conditional compilation is little bit cryptic, but it does
-        // make sure that whatever profile we building (release/debug) we don't
-        // get dead code warning, without any explicit `#[allow(dead_code)]`
-        #[cfg(debug_assertions)]
-        if cfg!(debug_assertions) {
-            Box::new(file::FileBackend::new())
-        } else {
-            Box::new(LibsecretBackend)
-        }
-
-        #[cfg(not(debug_assertions))]
         Box::new(LibsecretBackend)
     }
 
@@ -210,7 +207,7 @@ mod linux {
             password_store_sync(
                 Some(&SCHEMA.schema),
                 attributes,
-                Some(&COLLECTION_DEFAULT),
+                Some(COLLECTION_DEFAULT),
                 "JetBrains ACP JCP Password",
                 value,
                 gio::Cancellable::NONE,
@@ -236,17 +233,6 @@ mod macos {
     };
 
     pub fn platform_keychain() -> Box<dyn SecretBackend> {
-        // This conditional compilation is little bit cryptic, but it does
-        // make sure that whatever profile we building (release/debug) we don't
-        // get dead code warning, without any explicit `#[allow(dead_code)]`
-        #[cfg(debug_assertions)]
-        if cfg!(debug_assertions) {
-            Box::new(file::FileBackend::new())
-        } else {
-            Box::new(MacOsBackend)
-        }
-
-        #[cfg(not(debug_assertions))]
         Box::new(MacOsBackend)
     }
 

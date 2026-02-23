@@ -63,7 +63,7 @@ fn main() {
     dotenv().ok();
 
     let cli = Cli::parse();
-    let keychain = keychain::platform_keychain();
+    let keychain = keychain::active_keychain();
 
     match cli.command {
         Commands::Login => {

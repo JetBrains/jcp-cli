@@ -4,7 +4,7 @@ use jcp::{
 };
 
 fn main() {
-    let keychain = keychain::platform_keychain();
+    let keychain = keychain::active_keychain();
     let token = if let Some(refresh_token) = keychain.get_refresh_token().unwrap() {
         get_access_token(&refresh_token).unwrap()
     } else {
