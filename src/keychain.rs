@@ -166,7 +166,6 @@ mod linux {
         password_lookup_sync, password_store_sync,
     };
 
-
     pub fn platform_keychain() -> Box<dyn SecretBackend> {
         Box::new(LibsecretBackend)
     }
