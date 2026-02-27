@@ -112,11 +112,16 @@ mod win32 {
             let mut value_blob = Vec::from(value);
             let mut target_name = target_name(name);
 
+            let blob_size: u32 = value_blob
+                .len()
+                .try_into()
+                .map_err(|_| io::Error::other("Secret value is too large"))?;
+
             let cred = CREDENTIALW {
                 Type: CRED_TYPE_GENERIC,
                 TargetName: target_name.as_pwstr(),
                 CredentialBlob: value_blob.as_mut_ptr(),
-                CredentialBlobSize: value_blob.len().try_into().unwrap(),
+                CredentialBlobSize: blob_size,
                 Persist: CRED_PERSIST_LOCAL_MACHINE,
                 ..Default::default()
             };

@@ -84,7 +84,10 @@ fn main() {
             }
         }
         Commands::Logout => {
-            keychain.delete_refresh_token().unwrap();
+            if let Err(e) = keychain.delete_refresh_token() {
+                eprintln!("Failed to delete refresh token: {}", e);
+                process::exit(1);
+            }
             eprintln!("Logout successful!");
         }
         Commands::Acp => run_adapter(&*keychain),
@@ -108,11 +111,21 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 
     let jba_access_token = authenticate(keychain);
 
-    let mut request = jcp_url.into_client_request().unwrap();
-    request.headers_mut().insert(
-        "Authorization",
-        format!("Bearer {jba_access_token}").parse().unwrap(),
-    );
+    let mut request = match jcp_url.into_client_request() {
+        Ok(req) => req,
+        Err(e) => {
+            eprintln!("Invalid JCP URL: {}", e);
+            process::exit(1);
+        }
+    };
+    let auth_header = match format!("Bearer {jba_access_token}").parse() {
+        Ok(header) => header,
+        Err(e) => {
+            eprintln!("Failed to create authorization header: {}", e);
+            process::exit(1);
+        }
+    };
+    request.headers_mut().insert("Authorization", auth_header);
 
     let config = match get_git_info() {
         Ok(git_info) => Ok(Config {
@@ -131,9 +144,21 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
     runtime.block_on(async {
-        let traffic_log = TrafficLog::new(env::var("TRAFFIC_LOG").ok()).await.unwrap();
+        let traffic_log = match TrafficLog::new(env::var("TRAFFIC_LOG").ok()).await {
+            Ok(log) => log,
+            Err(e) => {
+                eprintln!("Failed to create traffic log: {}", e);
+                process::exit(1);
+            }
+        };
 
-        let (ws_stream, _) = connect_async(request).await.unwrap();
+        let (ws_stream, _) = match connect_async(request).await {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("Failed to connect to JCP: {}", e);
+                process::exit(1);
+            }
+        };
         let (ws_tx, ws_rx) = ws_stream.split();
 
         let downlink = IoTransport::new(stdin(), stdout());
@@ -154,10 +179,17 @@ fn authenticate(keychain: &dyn SecretBackend) -> String {
         access_key
     } else {
         // Try to get refresh token from keychain and upgrade it
-        let Some(refresh_token) = keychain.get_refresh_token().unwrap() else {
-            eprintln!("No refresh token found");
-            eprintln!("Please run `acp-jcp login` to authenticate.");
-            process::exit(1);
+        let refresh_token = match keychain.get_refresh_token() {
+            Ok(Some(token)) => token,
+            Ok(None) => {
+                eprintln!("No refresh token found");
+                eprintln!("Please run `acp-jcp login` to authenticate.");
+                process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Failed to read refresh token from keychain: {}", e);
+                process::exit(1);
+            }
         };
         match get_access_token(&refresh_token) {
             Ok(token) => token,
