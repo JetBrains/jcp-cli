@@ -288,13 +288,10 @@ fn read_authorization_code_from_callback(
         }
 
         // Send success response to browser
-        let mut response = Response::from_string(include_str!("auth_success.html"));
-        // This header construction is safe since we're using known valid ASCII strings
-        if let Ok(header) =
+        let response = Response::from_string(include_str!("auth_success.html")).with_header(
             tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
-        {
-            response = response.with_header(header);
-        }
+                .unwrap(),
+        );
         let _ = request.respond(response);
 
         return Ok(AuthorizationCode::new(code));
