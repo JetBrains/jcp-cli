@@ -515,15 +515,15 @@ mod tests {
     #[test]
     fn test_new_session_meta_deserialization() {
         check_serialization(
-            r#"{
+            serde_json::json!({
                 "remote": {
-                    "branch":"main",
-                    "url":"https://example.com/repo.git",
-                    "revision":"18adf27d36912b2e255c71327146ac21116e232f"
+                    "branch": "main",
+                    "url": "https://example.com/repo.git",
+                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
                 },
                 "jbAiToken": "test_token",
                 "supportsUserGitAuthFlow": false
-            }"#,
+            }),
             NewSessionMeta {
                 remote: GitRemoteInfo {
                     branch: "main".to_string(),
@@ -536,14 +536,14 @@ mod tests {
         );
 
         check_serialization(
-            r#"{
+            serde_json::json!({
                 "remote": {
-                    "branch":"main",
-                    "url":"https://example.com/repo.git",
-                    "revision":"18adf27d36912b2e255c71327146ac21116e232f"
+                    "branch": "main",
+                    "url": "https://example.com/repo.git",
+                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
                 },
                 "jbAiToken": "test_token"
-            }"#,
+            }),
             NewSessionMeta {
                 remote: GitRemoteInfo {
                     branch: "main".to_string(),
@@ -559,13 +559,13 @@ mod tests {
     #[test]
     fn test_end_turn_meta_deserialization() {
         check_serialization(
-            r#"{
+            serde_json::json!({
                 "target": {
-                    "branch":"main",
-                    "url":"https://example.com/repo.git",
-                    "revision":"18adf27d36912b2e255c71327146ac21116e232f"
+                    "branch": "main",
+                    "url": "https://example.com/repo.git",
+                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
                 }
-            }"#,
+            }),
             EndTurnMeta {
                 target: GitRemoteInfo {
                     branch: "main".to_string(),
@@ -636,11 +636,10 @@ mod tests {
     }
 
     #[track_caller]
-    fn check_serialization<T>(json: &str, expected_value: T)
+    fn check_serialization<T>(json: Value, expected_value: T)
     where
         T: DeserializeOwned + Serialize + PartialEq + Debug,
     {
-        let json: Value = serde_json::from_str(json).unwrap();
         let deserialized: T = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(deserialized, expected_value);
         let serialized = serde_json::to_value(deserialized).unwrap();
