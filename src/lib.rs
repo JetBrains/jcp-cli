@@ -509,7 +509,7 @@ mod tests {
     use agent_client_protocol::{AgentSide, ClientRequest, LoadSessionRequest, Side};
     use drop_check::{IntersperceExt, cancellations};
     use serde::de::DeserializeOwned;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::{fmt::Debug, io::Cursor};
 
     #[test]
