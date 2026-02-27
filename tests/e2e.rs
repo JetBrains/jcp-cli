@@ -1,12 +1,12 @@
 use agent_client_protocol::{
-    AgentNotification, AgentResponse, AgentSide, ClientRequest, ClientSide, ContentBlock,
-    ContentChunk, InitializeRequest, InitializeResponse, JsonRpcMessage, NewSessionRequest,
-    NewSessionResponse, Notification, PromptRequest, PromptResponse, ProtocolVersion, RawValue,
-    Request, RequestId, Response, SessionNotification, SessionUpdate, Side, StopReason,
-    TextContent,
+    self as acp, AgentNotification, AgentResponse, AgentSide, ClientRequest, ClientSide,
+    ContentBlock, ContentChunk, InitializeRequest, InitializeResponse, JsonRpcMessage,
+    NewSessionRequest, NewSessionResponse, Notification, PromptRequest, PromptResponse,
+    ProtocolVersion, Request, RequestId, Response, SessionNotification, SessionUpdate, Side,
+    StopReason, TextContent,
 };
-use jcp::{AgentOutgoingMessage, ClientOutgoingMessage, JSON_RPC_ERROR_INVALID_PARAMS};
-use serde::{Deserialize, de::DeserializeOwned};
+use jcp::{AgentOutgoingMessage, ClientOutgoingMessage, RawIncomingMessage};
+use serde::de::DeserializeOwned;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
@@ -74,7 +74,7 @@ fn run_outside_git_directory() {
     match e2e.initialize_check() {
         Ok(r) => panic!("JSON RPC error is expected. Got: {r:?}"),
         Err(e) => {
-            assert_eq!(e.code, JSON_RPC_ERROR_INVALID_PARAMS);
+            assert_eq!(e.code, acp::ErrorCode::InvalidParams);
             assert!(
                 e.message
                     .contains("Program should be run in git working copy."),
@@ -149,7 +149,7 @@ impl E2eHarness {
 
     /// Does initialization and basic checks
     #[track_caller]
-    fn initialize_check(&mut self) -> Result<InitializeResponse, RpcError> {
+    fn initialize_check(&mut self) -> Result<InitializeResponse, acp::Error> {
         let (response, _) = self.client_request::<InitializeResponse>(
             ClientRequest::InitializeRequest(InitializeRequest::new(ProtocolVersion::V1)),
         );
@@ -158,7 +158,7 @@ impl E2eHarness {
         Ok(response)
     }
 
-    fn new_session_check(&mut self) -> Result<NewSessionResponse, RpcError> {
+    fn new_session_check(&mut self) -> Result<NewSessionResponse, acp::Error> {
         let (response, _) = self.client_request::<NewSessionResponse>(
             ClientRequest::NewSessionRequest(NewSessionRequest::new("./")),
         );
@@ -172,7 +172,7 @@ impl E2eHarness {
     fn client_request<T: DeserializeOwned>(
         &mut self,
         request: ClientRequest,
-    ) -> (Result<T, RpcError>, Vec<AgentNotification>) {
+    ) -> (Result<T, acp::Error>, Vec<AgentNotification>) {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
@@ -235,39 +235,6 @@ impl Drop for E2eHarness {
             server_join_handle.join().ok();
         }
     }
-}
-
-/// Because ACP is a duplex protocol (requests can be initiated not only by a client, but also by a server)
-/// we can not use standard JSON RPC crates for working with transport messages. Those crates assumes that
-/// each party know what is expected (request/notification, response, error) when reading next message
-/// from a transport.
-///
-/// This is a JsonRpc payload messages that covers all 3 types of JSON-RPC messages:
-/// request/notification, response, error.
-#[derive(Debug, Deserialize)]
-struct RawIncomingMessage<'a> {
-    #[serde(rename = "id")]
-    id: Option<RequestId>,
-
-    #[serde(rename = "method")]
-    method: Option<&'a str>,
-
-    #[serde(rename = "params")]
-    params: Option<&'a RawValue>,
-
-    #[serde(rename = "result")]
-    result: Option<&'a RawValue>,
-
-    #[serde(rename = "error")]
-    error: Option<RpcError>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RpcError {
-    #[serde(rename = "code")]
-    code: i32,
-    #[serde(rename = "message")]
-    message: String,
 }
 
 /// Serves a mock WS/ACP server.

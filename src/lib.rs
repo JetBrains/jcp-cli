@@ -25,8 +25,6 @@ pub mod keychain;
 pub type AgentOutgoingMessage = OutgoingMessage<AgentSide, ClientSide>;
 pub type ClientOutgoingMessage = OutgoingMessage<ClientSide, AgentSide>;
 
-pub const JSON_RPC_ERROR_INVALID_PARAMS: i32 = -32602;
-
 /// A bidirectional transport for JSON-RPC messages.
 ///
 /// This trait abstracts over different transport mechanisms (stdio, websocket, channels)
@@ -216,12 +214,28 @@ pub struct GitRemoteInfo {
     pub revision: String,
 }
 
+/// Because ACP is a duplex protocol (requests can be initiated not only by a client, but also by a server)
+/// we can not use standard JSON RPC crates for working with transport messages. Those crates assumes that
+/// each party know what is expected (request/notification, response, error) when reading next message
+/// from a transport.
+///
+/// This is a JsonRpc payload messages that covers all 3 types of JSON-RPC messages:
+/// request/notification, response, error.
 #[derive(Debug, Deserialize)]
 pub struct RawIncomingMessage<'a> {
-    pub id: Option<acp::RequestId>,
+    #[serde(rename = "id")]
+    pub id: Option<RequestId>,
+
+    #[serde(rename = "method")]
     pub method: Option<&'a str>,
+
+    #[serde(rename = "params")]
     pub params: Option<&'a RawValue>,
+
+    #[serde(rename = "result")]
     pub result: Option<&'a RawValue>,
+
+    #[serde(rename = "error")]
     pub error: Option<acp::Error>,
 }
 
@@ -388,7 +402,7 @@ impl Adapter {
                     let msg =
                         JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
                             id: id.clone(),
-                            error: acp::Error::new(JSON_RPC_ERROR_INVALID_PARAMS, e),
+                            error: acp::Error::new(acp::ErrorCode::InvalidParams.into(), e),
                         }));
                     let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
                     self.client.send(value).await?;
