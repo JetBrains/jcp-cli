@@ -383,3 +383,128 @@ struct OrgInfo {
     workspace_id: String,
     raw_token: String,
 }
+
+#[derive(Deserialize)]
+pub struct UserAssets {
+    #[serde(rename = "assets")]
+    pub assets: Vec<License>,
+}
+
+impl UserAssets {
+    pub fn choose_first_ai_license(&self) -> Option<String> {
+        let matched_license = self.assets.iter().find(|lic| {
+            !lic.cancelled
+                && !lic.suspended
+                && lic.allowances.iter().any(Allowance::is_ai_allowance)
+        });
+        matched_license.map(|l| l.code.clone())
+    }
+}
+
+#[derive(Deserialize)]
+pub struct License {
+    #[serde(rename = "code")]
+    pub code: String,
+
+    #[serde(rename = "licenseId")]
+    pub license_id: String,
+
+    #[serde(rename = "suspended")]
+    pub suspended: bool,
+
+    #[serde(rename = "cancelled")]
+    pub cancelled: bool,
+
+    #[serde(rename = "allowance")]
+    pub allowances: Vec<Allowance>,
+}
+
+#[derive(Deserialize)]
+pub struct Allowance {
+    #[serde(rename = "code")]
+    pub code: String,
+
+    #[serde(rename = "name")]
+    pub name: String,
+}
+
+impl Allowance {
+    pub fn is_ai_allowance(&self) -> bool {
+        const ALLOW_ASSETS: [&str; 5] = ["AIP", "AIPU", "AIF", "AIL", "GZL"];
+        ALLOW_ASSETS.contains(&self.code.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn check_assets_deserialization() {
+        let json = json!(
+            {
+              "status": "OK",
+              "username": "john.doe@jetbrains.com",
+              "firstName": "John",
+              "lastName": "Doe",
+              "email": "john.doe@jetbrains.com",
+              "assets": [
+                {
+                  "code": "AIPU",
+                  "name": "JetBrains AI Ultimate",
+                  "description": "",
+                  "licenseId": "JPRK",
+                  "suspended": true,
+                  "cancelled": false,
+                  "overuseTill": "2026-12-17T00:00:00.000+0300",
+                  "version": "2025.2",
+                  "expires": "2026-12-16",
+                  "recurrent": false,
+                  "allowance": [ { "code": "AIPU", "name": "JetBrains AI Ultimate", "paidUpTo": "2026-12-16" } ]
+                },
+                {
+                  "code": "JUNP",
+                  "name": "Junie Pro",
+                  "description": "",
+                  "licenseId": "FGTJ2",
+                  "suspended": false,
+                  "cancelled": false,
+                  "overuseTill": "2026-12-31T00:00:00.000+0300",
+                  "expires": "2026-12-31",
+                  "recurrent": false,
+                  "allowance": [ { "code": "JUNP", "name": "Junie Pro", "paidUpTo": "2026-12-31" } ]
+                },
+                {
+                  "code": "AIRP",
+                  "name": "Air Preview",
+                  "description": "",
+                  "licenseId": "PRVU",
+                  "suspended": false,
+                  "cancelled": false,
+                  "overuseTill": "2026-03-31T00:00:00.000+0300",
+                  "expires": "2026-03-31",
+                  "recurrent": false,
+                  "allowance": [ { "code": "AIRP", "name": "Air Preview", "paidUpTo": "2026-03-31" } ]
+                },
+                {
+                  "code": "RR",
+                  "name": "RustRover",
+                  "description": "Rust IDE by JetBrains",
+                  "licenseId": "FUIMA",
+                  "suspended": false,
+                  "cancelled": false,
+                  "overuseTill": "2026-07-12T00:00:00.000+0300",
+                  "version": "2025.3",
+                  "expires": "2026-07-05",
+                  "recurrent": false,
+                  "allowance": [ { "code": "AIF", "name": "JetBrains AI Pro", "paidUpTo": "2026-07-05" } ]
+                }
+              ]
+            }
+        );
+
+        let r = serde_json::from_value::<UserAssets>(json).unwrap();
+        assert_eq!(r.choose_first_ai_license().as_deref(), Some("RR"));
+    }
+}
