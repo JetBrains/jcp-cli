@@ -67,7 +67,9 @@ pub fn login() -> Result<String, AuthError> {
         .add_scope(Scope::new("offline_access".to_string()))
         .add_scope(Scope::new("openid".to_string()))
         .add_scope(Scope::new("org-service".to_string()))
-        .add_scope(Scope::new("jba".to_string()))
+        .add_scope(Scope::new("jba:r_profile".to_string()))
+        .add_scope(Scope::new("jba:r_ide_auth".to_string()))
+        .add_scope(Scope::new("jba:r_assets".to_string()))
         .set_pkce_challenge(pkce_challenge)
         .url();
 
