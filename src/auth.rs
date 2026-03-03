@@ -25,9 +25,10 @@ const JCP_AS_AUDIENCE: &str = "jcp-agent-spawner";
 /// The expected callback path for OAuth redirect
 const CALLBACK_PATH: &str = "/space/auth";
 
+/// Containes access tokens to JCP and JetBrains AI Platform
 pub struct AccessTokens {
     pub jcp_access_token: String,
-    pub jb_ai_accesss_token: String,
+    pub ai_access_token: String,
 }
 
 /// Performs OAuth browser login flow and returns a refresh token.
@@ -122,12 +123,12 @@ pub fn get_access_tokens(refresh_token: &str) -> Result<AccessTokens, AuthError>
     let id_token = tokens.id_token.ok_or(AuthError::MissingIdToken)?;
 
     // Switch token audience for JCP access
-    let jcp_access_token = switch_token_audience(&http_client, refresh_token, &org_info)?;
-    let jb_ai_accesss_token = retrieve_jb_ai_token(&http_client, &tokens.access_token, &id_token)?;
+    let jcp_access_token = retrieve_jcp_access_token(&http_client, refresh_token, &org_info)?;
+    let ai_access_token = retrieve_ai_access_token(&http_client, &tokens.access_token, &id_token)?;
 
     Ok(AccessTokens {
         jcp_access_token,
-        jb_ai_accesss_token,
+        ai_access_token,
     })
 }
 
@@ -152,36 +153,24 @@ fn refresh_tokens(
             ("refresh_token", refresh_token),
             ("client_id", CLIENT_ID),
         ])
-        .send()?;
+        .send()?
+        .error_for_status()
+        .map_err(AuthError::TokenRefresh)?
+        .json()?;
 
-    let status = response.status().as_u16();
-    if status != 200 {
-        return Err(AuthError::TokenRefresh {
-            status,
-            body: response.text().unwrap_or_default(),
-        });
-    }
-
-    Ok(response.json()?)
+    Ok(response)
 }
 
 /// Fetches organization info from JCP using the access token.
 fn get_org_info(http_client: &Client, access_token: &str) -> Result<OrgInfo, AuthError> {
-    let response = http_client
+    let raw_token = http_client
         .get(format!("{}/org/orgsuserinfo", JCP_API_URL))
         .bearer_auth(access_token)
         .header("Accept", "application/jwt")
-        .send()?;
-
-    let status = response.status().as_u16();
-    if status != 200 {
-        return Err(AuthError::OrgInfoFetch {
-            status,
-            body: response.text().unwrap_or_default(),
-        });
-    }
-
-    let raw_token = response.text()?;
+        .send()?
+        .error_for_status()
+        .map_err(AuthError::OrgInfoFetch)?
+        .text()?;
 
     // Parse JWT to extract organization ID
     let token: Token<Value, JcpTokenClaims, _> = Token::parse_unverified(&raw_token)?;
@@ -207,7 +196,7 @@ fn get_org_info(http_client: &Client, access_token: &str) -> Result<OrgInfo, Aut
     })
 }
 
-fn retrieve_jb_ai_token(
+fn retrieve_ai_access_token(
     http: &Client,
     access_token: &str,
     id_token: &str,
@@ -221,7 +210,10 @@ fn retrieve_jb_ai_token(
     let assets = response.json::<UserAssets>()?;
 
     let license_id = assets
-        .choose_first_ai_license_code()
+        .find_matched_licenses()
+        // No UI yetm so just choosing first License
+        .next()
+        .map(|l| l.license_id.clone())
         .ok_or(AuthError::NoValidAiLicenseFound)?;
 
     let response = http
@@ -235,29 +227,10 @@ fn retrieve_jb_ai_token(
     Ok(response.token)
 }
 
-/// Matching type for Grazie License API
-///
-/// https://code.jetbrains.team/p/grazi/repositories/grazie-platform/files/e6822ebbbf1c33110b9754ea9c3be776e5a2b654/api/api-gateway/api-gateway-api/src/commonMain/kotlin/ai/grazie/api/gateway/api/AuthAPI.kt?tab=source&line=157&lines-count=12
-mod grazie_license_v2 {
-    use super::*;
-
-    #[derive(Serialize)]
-    pub(super) struct Request {
-        #[serde(rename = "licenseId")]
-        pub(super) license_id: String,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct Response {
-        #[serde(rename = "token")]
-        pub(super) token: String,
-    }
-}
-
 /// Switches the token audience to get a JCP-scoped access token.
 ///
 /// https://youtrack.jetbrains.com/projects/JCP/articles/JCP-A-204/Refresh-Token-Flow#org-access-token
-fn switch_token_audience(
+fn retrieve_jcp_access_token(
     http_client: &Client,
     refresh_token: &str,
     org_info: &OrgInfo,
@@ -275,15 +248,9 @@ fn switch_token_audience(
             ("orgs_user_info", &org_info.raw_token),
             ("workspace_id", &org_info.workspace_id),
         ])
-        .send()?;
-
-    let status = response.status().as_u16();
-    if status != 200 {
-        return Err(AuthError::AudienceSwitch {
-            status,
-            body: response.text().unwrap_or_default(),
-        });
-    }
+        .send()?
+        .error_for_status()
+        .map_err(AuthError::AudienceSwitch)?;
 
     Ok(response.json::<OAuthTokenResponse>()?.access_token)
 }
@@ -370,10 +337,6 @@ fn extract_query_param(url: &Url, param_name: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-// =============================================================================
-// Error Types
-// =============================================================================
-
 #[derive(Error, Debug)]
 pub enum AuthError {
     #[error("Failed to start local callback server: {0}")]
@@ -397,8 +360,8 @@ pub enum AuthError {
     #[error("Missing refresh token in OAuth response")]
     MissingRefreshToken,
 
-    #[error("Failed to fetch organization info: {status} - {body}")]
-    OrgInfoFetch { status: u16, body: String },
+    #[error("Failed to fetch organization info: {0}")]
+    OrgInfoFetch(reqwest::Error),
 
     #[error("No organization found in user's account")]
     NoOrganization,
@@ -406,11 +369,11 @@ pub enum AuthError {
     #[error("No workspace found in user's organization")]
     NoWorkspace,
 
-    #[error("Failed to switch token audience: {status} - {body}")]
-    AudienceSwitch { status: u16, body: String },
+    #[error("Failed to switch token audience: {0}")]
+    AudienceSwitch(reqwest::Error),
 
-    #[error("Failed to refresh access token: {status} - {body}")]
-    TokenRefresh { status: u16, body: String },
+    #[error("Failed to refresh access token: {0}")]
+    TokenRefresh(reqwest::Error),
 
     #[error("HTTP request failed: {0}")]
     ReqwestRequest(#[from] reqwest::Error),
@@ -464,13 +427,31 @@ pub struct UserAssets {
 }
 
 impl UserAssets {
-    pub fn choose_first_ai_license_code(&self) -> Option<String> {
-        let matched_license = self.assets.iter().find(|lic| {
+    pub fn find_matched_licenses(&self) -> impl Iterator<Item = &License> {
+        self.assets.iter().filter(|lic| {
             !lic.cancelled
                 && !lic.suspended
                 && lic.allowances.iter().any(Allowance::is_ai_allowance)
-        });
-        matched_license.map(|l| l.license_id.clone())
+        })
+    }
+}
+
+/// Matching type for Grazie License API
+///
+/// https://code.jetbrains.team/p/grazi/repositories/grazie-platform/files/e6822ebbbf1c33110b9754ea9c3be776e5a2b654/api/api-gateway/api-gateway-api/src/commonMain/kotlin/ai/grazie/api/gateway/api/AuthAPI.kt?tab=source&line=157&lines-count=12
+mod grazie_license_v2 {
+    use super::*;
+
+    #[derive(Serialize)]
+    pub(super) struct Request {
+        #[serde(rename = "licenseId")]
+        pub(super) license_id: String,
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct Response {
+        #[serde(rename = "token")]
+        pub(super) token: String,
     }
 }
 
@@ -578,6 +559,10 @@ mod tests {
         );
 
         let r = serde_json::from_value::<UserAssets>(json).unwrap();
-        assert_eq!(r.choose_first_ai_license_code().as_deref(), Some("RR"));
+        let license_ids = r
+            .find_matched_licenses()
+            .map(|l| &l.license_id)
+            .collect::<Vec<_>>();
+        assert_eq!(license_ids, vec!["FUIMA"]);
     }
 }

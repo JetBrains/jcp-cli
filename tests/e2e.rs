@@ -121,7 +121,7 @@ impl E2eHarness {
         cmd.args(["acp"])
             .env("JCP_URL", url.as_str())
             .env("AI_PLATFORM_TOKEN", "test-token")
-            .env("JBA_ACCESS_TOKEN", "test-access-token")
+            .env("JCP_ACCESS_TOKEN", "test-access-token")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
 

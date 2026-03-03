@@ -1,5 +1,5 @@
 use jcp::{
-    auth::{AuthError, get_access_tokens, login},
+    auth::{get_access_tokens, login},
     keychain,
 };
 
@@ -14,5 +14,5 @@ fn main() {
 
     eprintln!("=== Authentication Successful ===\n");
     eprintln!("JCP Access token:\n  {}\n", token.jcp_access_token);
-    eprintln!("JB AI Access token:\n  {}\n", token.jb_ai_accesss_token);
+    eprintln!("JB AI Access token:\n  {}\n", token.ai_access_token);
 }

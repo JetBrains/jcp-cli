@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use jcp::{
-    auth::{get_access_tokens, login},
+    auth::{AccessTokens, get_access_tokens, login},
     keychain::{self, SecretBackend},
 };
 use std::process::Command;
@@ -98,20 +98,18 @@ fn run_adapter(keychain: &dyn SecretBackend) {
     use tokio_tungstenite::connect_async;
     use tungstenite::client::IntoClientRequest;
 
-    let Some(ai_platform_token) = env::var("AI_PLATFORM_TOKEN").ok() else {
-        eprintln!("AI_PLATFORM_TOKEN env variable should be configured");
-        process::exit(1);
-    };
     let jcp_url = env::var("JCP_URL")
         .ok()
         .unwrap_or("wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into());
 
-    let jba_access_token = authenticate(keychain);
+    let tokens = authenticate(keychain);
 
     let mut request = jcp_url.into_client_request().unwrap();
     request.headers_mut().insert(
         "Authorization",
-        format!("Bearer {jba_access_token}").parse().unwrap(),
+        format!("Bearer {}", tokens.jcp_access_token)
+            .parse()
+            .unwrap(),
     );
 
     let config = match get_git_info() {
@@ -119,7 +117,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
             git_url: git_info.url,
             branch: git_info.branch,
             revision: git_info.revision,
-            ai_platform_token,
+            ai_platform_token: tokens.ai_access_token,
         }),
         Err(e) => {
             let desc =
@@ -149,9 +147,20 @@ fn run_adapter(keychain: &dyn SecretBackend) {
     });
 }
 
-fn authenticate(keychain: &dyn SecretBackend) -> String {
-    if let Ok(access_key) = env::var("JBA_ACCESS_TOKEN") {
-        access_key
+/// Retrieves access tokens
+///
+/// If both `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` are present, then they are used
+/// If not refresh token is retireved from keychain and access tokens are requests.
+/// `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` env variables still allows to override respective tokens.
+fn authenticate(keychain: &dyn SecretBackend) -> AccessTokens {
+    let jb_ai = env::var("AI_PLATFORM_TOKEN").ok();
+    let jcp = env::var("JCP_ACCESS_TOKEN").ok();
+
+    if let Some((jb_ai_access_token, jcp_access_token)) = jb_ai.as_ref().zip(jcp.as_ref()) {
+        AccessTokens {
+            jcp_access_token: jcp_access_token.to_string(),
+            ai_access_token: jb_ai_access_token.to_string(),
+        }
     } else {
         // Try to get refresh token from keychain and upgrade it
         let Some(refresh_token) = keychain.get_refresh_token().unwrap() else {
@@ -160,7 +169,10 @@ fn authenticate(keychain: &dyn SecretBackend) -> String {
             process::exit(1);
         };
         match get_access_tokens(&refresh_token) {
-            Ok(token) => token.jcp_access_token,
+            Ok(tokens) => AccessTokens {
+                jcp_access_token: jcp.unwrap_or(tokens.jcp_access_token),
+                ai_access_token: jb_ai.unwrap_or(tokens.ai_access_token),
+            },
             Err(e) => {
                 eprintln!("Failed to get access token: {}", e);
                 eprintln!("Please run `acp-jcp login` to re-authenticate.");
