@@ -3,8 +3,8 @@ use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope,
     TokenResponse, TokenUrl, basic::BasicClient,
 };
-use reqwest::{blocking::Client, redirect::Policy};
-use serde::Deserialize;
+use reqwest::{blocking::Client, header::ACCEPT, redirect::Policy};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tiny_http::{Response, Server};
@@ -24,6 +24,11 @@ const JCP_AS_AUDIENCE: &str = "jcp-agent-spawner";
 
 /// The expected callback path for OAuth redirect
 const CALLBACK_PATH: &str = "/space/auth";
+
+pub struct AccessTokens {
+    pub jcp_access_token: String,
+    pub jb_ai_accesss_token: String,
+}
 
 /// Performs OAuth browser login flow and returns a refresh token.
 ///
@@ -105,17 +110,25 @@ pub fn login() -> Result<String, AuthError> {
 /// 3. Switches the token audience to get a JCP-scoped token
 ///
 /// Use this with a refresh token obtained from [`login()`].
-pub fn get_access_token(refresh_token: &str) -> Result<String, AuthError> {
+pub fn get_access_tokens(refresh_token: &str) -> Result<AccessTokens, AuthError> {
     let http_client = create_http_client()?;
 
     // Refresh to get a new access token
-    let access_token = refresh_access_token(&http_client, refresh_token)?;
+    let tokens = refresh_tokens(&http_client, refresh_token)?;
 
     // Get organization info
-    let org_info = get_org_info(&http_client, &access_token)?;
+    let org_info = get_org_info(&http_client, &tokens.access_token)?;
+
+    let id_token = tokens.id_token.ok_or(AuthError::MissingIdToken)?;
 
     // Switch token audience for JCP access
-    switch_token_audience(&http_client, refresh_token, &org_info)
+    let jcp_access_token = switch_token_audience(&http_client, refresh_token, &org_info)?;
+    let jb_ai_accesss_token = retrieve_jb_ai_token(&http_client, &tokens.access_token, &id_token)?;
+
+    Ok(AccessTokens {
+        jcp_access_token,
+        jb_ai_accesss_token,
+    })
 }
 
 /// Creates an HTTP client configured for OAuth operations.
@@ -126,7 +139,10 @@ fn create_http_client() -> Result<Client, AuthError> {
 }
 
 /// Refreshes an access token using a refresh token.
-fn refresh_access_token(http_client: &Client, refresh_token: &str) -> Result<String, AuthError> {
+fn refresh_tokens(
+    http_client: &Client,
+    refresh_token: &str,
+) -> Result<OAuthTokenResponse, AuthError> {
     let token_url = format!("{}/oauth2/token", OAUTH_BASE_URL);
 
     let response = http_client
@@ -146,7 +162,7 @@ fn refresh_access_token(http_client: &Client, refresh_token: &str) -> Result<Str
         });
     }
 
-    Ok(response.json::<OAuthTokenResponse>()?.access_token)
+    Ok(response.json()?)
 }
 
 /// Fetches organization info from JCP using the access token.
@@ -189,6 +205,53 @@ fn get_org_info(http_client: &Client, access_token: &str) -> Result<OrgInfo, Aut
         raw_token,
         workspace_id,
     })
+}
+
+fn retrieve_jb_ai_token(
+    http: &Client,
+    access_token: &str,
+    id_token: &str,
+) -> Result<String, AuthError> {
+    let response = http
+        .get("https://active.jetprofile-aip.intellij.net/services/account/assets")
+        .bearer_auth(access_token)
+        .header(ACCEPT, "application/json")
+        .send()?;
+
+    let assets = response.json::<UserAssets>()?;
+
+    let license_id = assets
+        .choose_first_ai_license_code()
+        .ok_or(AuthError::NoValidAiLicenseFound)?;
+
+    let response = http
+        .post("https://api.stgn.jetbrains.ai/auth/jetbrains-jwt/provide-access/license/v2")
+        .bearer_auth(id_token)
+        .header(ACCEPT, "application/json")
+        .json(&grazie_license_v2::Request { license_id })
+        .send()?;
+
+    let response = response.json::<grazie_license_v2::Response>()?;
+    Ok(response.token)
+}
+
+/// Matching type for Grazie License API
+///
+/// https://code.jetbrains.team/p/grazi/repositories/grazie-platform/files/e6822ebbbf1c33110b9754ea9c3be776e5a2b654/api/api-gateway/api-gateway-api/src/commonMain/kotlin/ai/grazie/api/gateway/api/AuthAPI.kt?tab=source&line=157&lines-count=12
+mod grazie_license_v2 {
+    use super::*;
+
+    #[derive(Serialize)]
+    pub(super) struct Request {
+        #[serde(rename = "licenseId")]
+        pub(super) license_id: String,
+    }
+
+    #[derive(Deserialize)]
+    pub(super) struct Response {
+        #[serde(rename = "token")]
+        pub(super) token: String,
+    }
 }
 
 /// Switches the token audience to get a JCP-scoped access token.
@@ -319,6 +382,12 @@ pub enum AuthError {
     #[error("OAuth server returned an error: {0}")]
     OAuthServer(String),
 
+    #[error("No valid AI License found")]
+    NoValidAiLicenseFound,
+
+    #[error("Missing IDToken in JCP OAuth response")]
+    MissingIdToken,
+
     #[error("Failed to exchange authorization code for tokens: {0}")]
     TokenExchange(#[source] Box<dyn std::error::Error + Send + Sync>),
 
@@ -354,6 +423,10 @@ pub enum AuthError {
 struct OAuthTokenResponse {
     #[serde(rename = "access_token")]
     access_token: String,
+
+    /// id_token is binded to scope openid and can be missing from token response
+    #[serde(rename = "id_token")]
+    id_token: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -384,24 +457,24 @@ struct OrgInfo {
     raw_token: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct UserAssets {
     #[serde(rename = "assets")]
     pub assets: Vec<License>,
 }
 
 impl UserAssets {
-    pub fn choose_first_ai_license(&self) -> Option<String> {
+    pub fn choose_first_ai_license_code(&self) -> Option<String> {
         let matched_license = self.assets.iter().find(|lic| {
             !lic.cancelled
                 && !lic.suspended
                 && lic.allowances.iter().any(Allowance::is_ai_allowance)
         });
-        matched_license.map(|l| l.code.clone())
+        matched_license.map(|l| l.license_id.clone())
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct License {
     #[serde(rename = "code")]
     pub code: String,
@@ -419,7 +492,7 @@ pub struct License {
     pub allowances: Vec<Allowance>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Allowance {
     #[serde(rename = "code")]
     pub code: String,
@@ -505,6 +578,6 @@ mod tests {
         );
 
         let r = serde_json::from_value::<UserAssets>(json).unwrap();
-        assert_eq!(r.choose_first_ai_license().as_deref(), Some("RR"));
+        assert_eq!(r.choose_first_ai_license_code().as_deref(), Some("RR"));
     }
 }

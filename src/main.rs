@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use jcp::{
-    auth::{get_access_token, login},
+    auth::{get_access_tokens, login},
     keychain::{self, SecretBackend},
 };
 use std::process::Command;
@@ -159,8 +159,8 @@ fn authenticate(keychain: &dyn SecretBackend) -> String {
             eprintln!("Please run `acp-jcp login` to authenticate.");
             process::exit(1);
         };
-        match get_access_token(&refresh_token) {
-            Ok(token) => token,
+        match get_access_tokens(&refresh_token) {
+            Ok(token) => token.jcp_access_token,
             Err(e) => {
                 eprintln!("Failed to get access token: {}", e);
                 eprintln!("Please run `acp-jcp login` to re-authenticate.");
