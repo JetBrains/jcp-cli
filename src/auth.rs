@@ -19,13 +19,17 @@ const CLIENT_ID: &str = "air";
 /// JetBrains Cloud Platform API base URL
 const JCP_API_URL: &str = "https://api.stgn.jetbrainscloud.com";
 
+const LICENSE_API_URL: &str = "https://active.jetprofile-aip.intellij.net";
+
+const JB_AI_API_URL: &str = "https://api.stgn.jetbrains.ai";
+
 /// Agent Spawner audience for upgrading OAuth access token
 const JCP_AS_AUDIENCE: &str = "jcp-agent-spawner";
 
 /// The expected callback path for OAuth redirect
 const CALLBACK_PATH: &str = "/space/auth";
 
-/// Containes access tokens to JCP and JetBrains AI Platform
+/// Contains access tokens to JCP and JetBrains AI Platform
 pub struct AccessTokens {
     pub jcp_access_token: String,
     pub ai_access_token: String,
@@ -106,16 +110,17 @@ pub fn login() -> Result<String, AuthError> {
 /// Converts a refresh token into a JCP access token.
 ///
 /// This function:
-/// 1. Uses the refresh token to get a fresh access token
+/// 1. Uses the JCP refresh token to get a fresh JCP access token and ID token
 /// 2. Fetches organization info from JCP
 /// 3. Switches the token audience to get a JCP-scoped token
+/// 4. reads the first AI license from JB AI platform and retrieves JB AI token
 ///
 /// Use this with a refresh token obtained from [`login()`].
 pub fn get_access_tokens(refresh_token: &str) -> Result<AccessTokens, AuthError> {
     let http_client = create_http_client()?;
 
-    // Refresh to get a new access token
-    let tokens = refresh_tokens(&http_client, refresh_token)?;
+    // Refresh to get a new access and ID tokens
+    let tokens = retrieve_jcp_access_and_id_tokens(&http_client, refresh_token)?;
 
     // Get organization info
     let org_info = get_org_info(&http_client, &tokens.access_token)?;
@@ -123,7 +128,8 @@ pub fn get_access_tokens(refresh_token: &str) -> Result<AccessTokens, AuthError>
     let id_token = tokens.id_token.ok_or(AuthError::MissingIdToken)?;
 
     // Switch token audience for JCP access
-    let jcp_access_token = retrieve_jcp_access_token(&http_client, refresh_token, &org_info)?;
+    let jcp_access_token =
+        retrieve_jcp_scoped_access_token(&http_client, refresh_token, &org_info)?;
     let ai_access_token = retrieve_ai_access_token(&http_client, &tokens.access_token, &id_token)?;
 
     Ok(AccessTokens {
@@ -140,7 +146,7 @@ fn create_http_client() -> Result<Client, AuthError> {
 }
 
 /// Refreshes an access token using a refresh token.
-fn refresh_tokens(
+fn retrieve_jcp_access_and_id_tokens(
     http_client: &Client,
     refresh_token: &str,
 ) -> Result<OAuthTokenResponse, AuthError> {
@@ -196,41 +202,45 @@ fn get_org_info(http_client: &Client, access_token: &str) -> Result<OrgInfo, Aut
     })
 }
 
+/// Reads JB AI Platform token linked to a AI-enabled license
 fn retrieve_ai_access_token(
     http: &Client,
     access_token: &str,
     id_token: &str,
 ) -> Result<String, AuthError> {
-    let response = http
-        .get("https://active.jetprofile-aip.intellij.net/services/account/assets")
+    let license_id = http
+        .get(format!("{LICENSE_API_URL}/services/account/assets"))
         .bearer_auth(access_token)
         .header(ACCEPT, "application/json")
-        .send()?;
-
-    let assets = response.json::<UserAssets>()?;
-
-    let license_id = assets
+        .send()?
+        .error_for_status()
+        .map_err(AuthError::License)?
+        .json::<UserAssets>()?
         .find_matched_licenses()
-        // No UI yetm so just choosing first License
+        // No UI yet, so just choosing first License
         .next()
         .map(|l| l.license_id.clone())
         .ok_or(AuthError::NoValidAiLicenseFound)?;
 
     let response = http
-        .post("https://api.stgn.jetbrains.ai/auth/jetbrains-jwt/provide-access/license/v2")
+        .post(format!(
+            "{JB_AI_API_URL}/auth/jetbrains-jwt/provide-access/license/v2"
+        ))
         .bearer_auth(id_token)
         .header(ACCEPT, "application/json")
         .json(&grazie_license_v2::Request { license_id })
-        .send()?;
+        .send()?
+        .error_for_status()
+        .map_err(AuthError::AiToken)?
+        .json::<grazie_license_v2::Response>()?;
 
-    let response = response.json::<grazie_license_v2::Response>()?;
     Ok(response.token)
 }
 
 /// Switches the token audience to get a JCP-scoped access token.
 ///
 /// https://youtrack.jetbrains.com/projects/JCP/articles/JCP-A-204/Refresh-Token-Flow#org-access-token
-fn retrieve_jcp_access_token(
+fn retrieve_jcp_scoped_access_token(
     http_client: &Client,
     refresh_token: &str,
     org_info: &OrgInfo,
@@ -374,6 +384,12 @@ pub enum AuthError {
 
     #[error("Failed to refresh access token: {0}")]
     TokenRefresh(reqwest::Error),
+
+    #[error("Failed to fetch license: {0}")]
+    License(reqwest::Error),
+
+    #[error("Failed to fetch AI token: {0}")]
+    AiToken(reqwest::Error),
 
     #[error("HTTP request failed: {0}")]
     ReqwestRequest(#[from] reqwest::Error),

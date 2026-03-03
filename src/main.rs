@@ -150,7 +150,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 /// Retrieves access tokens
 ///
 /// If both `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` are present, then they are used
-/// If not refresh token is retireved from keychain and access tokens are requests.
+/// If not refresh token is retrieved from keychain and access tokens are requests.
 /// `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` env variables still allows to override respective tokens.
 fn authenticate(keychain: &dyn SecretBackend) -> AccessTokens {
     let jb_ai = env::var("AI_PLATFORM_TOKEN").ok();
