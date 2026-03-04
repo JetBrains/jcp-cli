@@ -403,7 +403,7 @@ struct OAuthTokenResponse {
     #[serde(rename = "access_token")]
     access_token: String,
 
-    /// id_token is binded to scope openid and can be missing from token response
+    /// id_token is bound to `openid` OAuth-scope and can be missing from token response
     #[serde(rename = "id_token")]
     id_token: Option<String>,
 }
