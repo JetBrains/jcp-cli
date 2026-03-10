@@ -176,7 +176,6 @@ impl Config {
                 revision: self.revision.clone(),
             },
             ai_platform_token: self.ai_platform_token.clone(),
-            supports_user_git_auth_flow: None,
         }
     }
 }
@@ -188,12 +187,6 @@ pub struct NewSessionMeta {
 
     #[serde(rename = "jbAiToken")]
     pub ai_platform_token: String,
-
-    #[serde(
-        rename = "supportsUserGitAuthFlow",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub supports_user_git_auth_flow: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -536,7 +529,6 @@ mod tests {
                     "revision": "18adf27d36912b2e255c71327146ac21116e232f"
                 },
                 "jbAiToken": "test_token",
-                "supportsUserGitAuthFlow": false
             }),
             NewSessionMeta {
                 remote: GitRemoteInfo {
@@ -545,27 +537,6 @@ mod tests {
                     revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
                 },
                 ai_platform_token: "test_token".to_string(),
-                supports_user_git_auth_flow: Some(false),
-            },
-        );
-
-        check_serialization(
-            json!({
-                "remote": {
-                    "branch": "main",
-                    "url": "https://example.com/repo.git",
-                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
-                },
-                "jbAiToken": "test_token"
-            }),
-            NewSessionMeta {
-                remote: GitRemoteInfo {
-                    branch: "main".to_string(),
-                    url: "https://example.com/repo.git".to_string(),
-                    revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
-                },
-                ai_platform_token: "test_token".to_string(),
-                supports_user_git_auth_flow: None,
             },
         );
     }
