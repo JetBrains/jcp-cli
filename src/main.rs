@@ -1,21 +1,41 @@
+use async_trait::async_trait;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use jcp::{
+    GitTool, WorkingCopyInfo,
     auth::{AccessTokens, get_access_tokens, login},
     keychain::{self, SecretBackend},
 };
+use std::path::Path;
 use std::process::Command;
 use std::{env, process};
 use tokio::runtime::Runtime;
 
-struct GitInfo {
-    url: String,
-    branch: String,
-    revision: String,
+/// Reads git info by running git commands in the given directory
+pub struct GitCommandTool;
+
+#[async_trait]
+impl GitTool for GitCommandTool {
+    async fn read_working_copy_info(&self, path: &Path) -> Result<WorkingCopyInfo, String> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let url = run_git(&path, &["remote", "get-url", "origin"])?;
+            let branch = run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+            let revision = run_git(&path, &["rev-parse", "HEAD"])?;
+            Ok(WorkingCopyInfo {
+                url,
+                branch,
+                revision,
+            })
+        })
+        .await
+        .map_err(|e| format!("Git task failed: {e}"))?
+    }
 }
 
-fn run_git(args: &[&str]) -> Result<String, String> {
+fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
+        .current_dir(cwd)
         .args(args)
         .output()
         .map_err(|e| format!("Failed to execute git: {}", e))?;
@@ -23,20 +43,6 @@ fn run_git(args: &[&str]) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Retrieves git repository information from the current directory.
-/// Returns URL of the remote origin, current branch name, and HEAD commit SHA.
-fn get_git_info() -> Result<GitInfo, String> {
-    let url = run_git(&["remote", "get-url", "origin"])?;
-    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let revision = run_git(&["rev-parse", "HEAD"])?;
-
-    Ok(GitInfo {
-        url,
-        branch,
-        revision,
-    })
 }
 
 #[derive(Parser)]
@@ -112,19 +118,8 @@ fn run_adapter(keychain: &dyn SecretBackend) {
             .unwrap(),
     );
 
-    let config = match get_git_info() {
-        Ok(git_info) => Ok(Config {
-            git_url: git_info.url,
-            branch: git_info.branch,
-            revision: git_info.revision,
-            ai_platform_token: tokens.ai_access_token,
-        }),
-        Err(e) => {
-            let desc =
-                format!("Failed to get git info. Program should be run in git working copy. {e}");
-            eprintln!("{desc}");
-            Err(desc)
-        }
+    let config = Config {
+        ai_platform_token: tokens.ai_access_token,
     };
 
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
@@ -137,7 +132,12 @@ fn run_adapter(keychain: &dyn SecretBackend) {
         let downlink = IoTransport::new(stdin(), stdout());
         let uplink = WebSocketTransport::new(ws_rx, ws_tx);
 
-        let mut adapter = Adapter::new(config, Box::new(downlink), Box::new(uplink));
+        let mut adapter = Adapter::new(
+            config,
+            Box::new(GitCommandTool),
+            Box::new(downlink),
+            Box::new(uplink),
+        );
         adapter.set_traffic_log(traffic_log);
         while adapter
             .handle_next_message()

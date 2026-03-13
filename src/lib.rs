@@ -9,7 +9,7 @@ use futures::{FutureExt, Sink, Stream};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, path::Path};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines},
@@ -158,26 +158,27 @@ impl Transport for WebSocketTransport {
     }
 }
 
+/// Git working copy information: remote URL, branch, and revision
+#[derive(Clone)]
+pub struct WorkingCopyInfo {
+    pub url: String,
+    pub branch: String,
+    pub revision: String,
+}
+
+/// Reads git repository information from a working copy.
+///
+/// Implementations must be safe to call from async context (the adapter uses
+/// `spawn_blocking` for the real implementation).
+#[async_trait]
+pub trait GitTool: Send + Sync {
+    async fn read_working_copy_info(&self, path: &Path) -> Result<WorkingCopyInfo, String>;
+}
+
 /// Configuration for the ACP-JCP adapter
 #[derive(Clone)]
 pub struct Config {
-    pub git_url: String,
-    pub branch: String,
-    pub revision: String,
     pub ai_platform_token: String,
-}
-
-impl Config {
-    pub fn new_session_meta(&self) -> NewSessionMeta {
-        NewSessionMeta {
-            remote: GitRemoteInfo {
-                branch: self.branch.clone(),
-                url: self.git_url.clone(),
-                revision: self.revision.clone(),
-            },
-            ai_platform_token: self.ai_platform_token.clone(),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -237,8 +238,8 @@ pub struct RawIncomingMessage<'a> {
 /// This struct processes messages from both channels using `tokio::select!`,
 /// allowing for synchronous test-driving without spawning separate tasks.
 pub struct Adapter {
-    /// Can be missing, in which case adapter should report error on initialize handlshake
-    config: Result<Config, String>,
+    config: Config,
+    git_tool: Box<dyn GitTool>,
     client: Box<dyn Transport>,
     agent: Box<dyn Transport>,
     traffic_log: TrafficLog,
@@ -252,15 +253,18 @@ pub struct Adapter {
 impl Adapter {
     /// Create a new adapter with the given configuration and transports.
     ///
+    /// - `git_tool`: reads git info from working copies on new session requests
     /// - `downlink`: transport to the client (IDE)
     /// - `uplink`: transport to the server (JCP)
     pub fn new(
-        config: Result<Config, String>,
+        config: Config,
+        git_tool: Box<dyn GitTool>,
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
     ) -> Self {
         Self {
             config,
+            git_tool,
             client,
             agent,
             traffic_log: TrafficLog::default(),
@@ -387,31 +391,31 @@ impl Adapter {
             let mut request = AgentSide::decode_request(method, rpc_msg.params)
                 .map_err(to_io_invalid_data_err)?;
 
-            if let ClientRequest::InitializeRequest(_) = request {
-                // On InitializeRequest we need to check all important preciditions and fail
-                // query to report a error to user if any.
-                if let Err(e) = &self.config {
-                    // no git config. Terminating protocol early
-                    let msg =
-                        JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
-                            id: id.clone(),
-                            error: acp::Error::new(acp::ErrorCode::InvalidParams.into(), e),
-                        }));
-                    let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
-                    self.client.send(value).await?;
-
-                    return Err(io::Error::other(e.clone()));
+            if let ClientRequest::NewSessionRequest(r) = &mut request {
+                // Read git info from the session's working directory
+                match self.git_tool.read_working_copy_info(&r.cwd).await {
+                    Ok(info) => {
+                        let meta = NewSessionMeta {
+                            remote: GitRemoteInfo {
+                                branch: info.branch,
+                                url: info.url,
+                                revision: info.revision,
+                            },
+                            ai_platform_token: self.config.ai_platform_token.clone(),
+                        };
+                        inject_new_session_meta(r, &meta)?;
+                    }
+                    Err(e) => {
+                        let msg =
+                            JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
+                                id: id.clone(),
+                                error: acp::Error::new(acp::ErrorCode::InvalidParams.into(), &e),
+                            }));
+                        let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
+                        self.client.send(value).await?;
+                        return Ok(());
+                    }
                 }
-            } else if let ClientRequest::NewSessionRequest(r) = &mut request {
-                // On a NewSessionRequest we need to inject remote info (git url and branch)
-                //
-                // Assuming git config present, because we checking it on a init phase
-                let meta = self
-                    .config
-                    .as_ref()
-                    .expect("No config found")
-                    .new_session_meta();
-                inject_new_session_meta(r, &meta)?;
             } else if let ClientRequest::PromptRequest(r) = &request {
                 self.prompt_request_mapping
                     .insert(id.clone(), r.session_id.clone());
@@ -631,6 +635,18 @@ mod tests {
         assert_eq!(json, serialized);
     }
 
+    struct NullGitTool;
+
+    #[async_trait]
+    impl GitTool for NullGitTool {
+        async fn read_working_copy_info(
+            &self,
+            _path: &std::path::Path,
+        ) -> Result<WorkingCopyInfo, String> {
+            panic!("GitTool should not be called in this test")
+        }
+    }
+
     #[tokio::test]
     async fn adapter_should_consume_all_messages() {
         const MESSAGE_REPETITIONS: usize = 10;
@@ -657,8 +673,12 @@ mod tests {
             )
         };
 
+        let config = Config {
+            ai_platform_token: "unused".to_string(),
+        };
         let mut adapter = Adapter::new(
-            Err("No config".to_string()),
+            config,
+            Box::new(NullGitTool),
             Box::new(downlink),
             Box::new(uplink),
         );

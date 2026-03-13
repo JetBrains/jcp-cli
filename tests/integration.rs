@@ -14,8 +14,8 @@ use agent_client_protocol::{
     InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse,
     ProtocolVersion, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
-use harness::TestHarness;
-use jcp::{Config, EndTurnMeta, GitRemoteInfo, NewSessionMeta};
+use harness::{StubGitTool, TestHarness};
+use jcp::{Config, EndTurnMeta, GitRemoteInfo, NewSessionMeta, WorkingCopyInfo};
 use serde_json::Value;
 
 mod harness;
@@ -27,7 +27,7 @@ const TEST_TOKEN: &str = "test-token";
 
 #[test]
 fn test_adapter_forwards_initialize_request_to_server() {
-    let mut harness = TestHarness::new(test_config());
+    let mut harness = test_harness();
 
     // Client sends initialize request
     let request = ClientRequest::InitializeRequest(InitializeRequest::new(1.into()));
@@ -55,9 +55,15 @@ fn test_adapter_forwards_initialize_request_to_server() {
 
 #[test]
 fn test_adapter_injects_meta_into_new_session_request() {
-    let config = test_config();
-    let expected_meta = config.new_session_meta();
-    let mut harness = TestHarness::new(config);
+    let expected_meta = NewSessionMeta {
+        remote: GitRemoteInfo {
+            branch: TEST_BRANCH.into(),
+            url: TEST_GIT_URL.into(),
+            revision: TEST_REVISION.into(),
+        },
+        ai_platform_token: TEST_TOKEN.into(),
+    };
+    let mut harness = test_harness();
 
     // Client sends newSession request (without meta)
     let request_id = harness.client_send(ClientRequest::NewSessionRequest(NewSessionRequest::new(
@@ -80,7 +86,7 @@ fn test_adapter_injects_meta_into_new_session_request() {
 
 #[test]
 fn adapter_need_to_inject_chunk_with_git_info() {
-    let mut harness = TestHarness::new(test_config());
+    let mut harness = test_harness();
 
     harness.initialize();
     let session_id = harness.new_session();
@@ -143,11 +149,14 @@ fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
     PromptResponse::new(StopReason::EndTurn).meta(json_meta)
 }
 
-fn test_config() -> Config {
-    Config {
-        git_url: TEST_GIT_URL.into(),
+fn test_harness() -> TestHarness {
+    let config = Config {
+        ai_platform_token: TEST_TOKEN.into(),
+    };
+    let git_tool = Box::new(StubGitTool(Ok(WorkingCopyInfo {
+        url: TEST_GIT_URL.into(),
         branch: TEST_BRANCH.into(),
         revision: TEST_REVISION.into(),
-        ai_platform_token: TEST_TOKEN.into(),
-    }
+    })));
+    TestHarness::new(config, git_tool)
 }
