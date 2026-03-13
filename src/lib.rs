@@ -647,14 +647,6 @@ mod tests {
         assert_eq!(json, serialized);
     }
 
-    struct NullGitTool;
-
-    impl GitTool for NullGitTool {
-        fn read_remote_info(&self, _path: &std::path::Path) -> Result<GitRemoteInfo, io::Error> {
-            panic!("GitTool should not be called in this test")
-        }
-    }
-
     #[tokio::test]
     async fn adapter_should_consume_all_messages() {
         const MESSAGE_REPETITIONS: usize = 10;
@@ -718,6 +710,14 @@ mod tests {
 
         for (_, result) in cancellations(init, recv) {
             assert_eq!(result.unwrap(), Some(expected.clone()));
+        }
+    }
+
+    struct NullGitTool;
+
+    impl GitTool for NullGitTool {
+        fn read_remote_info(&self, _path: &std::path::Path) -> Result<GitRemoteInfo, io::Error> {
+            panic!("GitTool should not be called in this test")
         }
     }
 }

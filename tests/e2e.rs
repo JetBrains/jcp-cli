@@ -82,6 +82,12 @@ fn run_outside_git_directory() {
         Ok(r) => panic!("JSON RPC error is expected. Got: {r:?}"),
         Err(e) => {
             assert_eq!(e.code, acp::ErrorCode::InvalidParams);
+            assert!(
+                e.message
+                    .contains("fatal: not a git repository (or any of the parent directories)"),
+                "Expected git error message, got: {}",
+                e.message
+            );
         }
     }
 }

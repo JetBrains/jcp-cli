@@ -55,15 +55,17 @@ fn test_adapter_forwards_initialize_request_to_server() {
 
 #[test]
 fn test_adapter_injects_meta_into_new_session_request() {
+    let remote_info = GitRemoteInfo {
+        branch: TEST_BRANCH.into(),
+        url: TEST_GIT_URL.into(),
+        revision: TEST_REVISION.into(),
+    };
     let expected_meta = NewSessionMeta {
-        remote: GitRemoteInfo {
-            branch: TEST_BRANCH.into(),
-            url: TEST_GIT_URL.into(),
-            revision: TEST_REVISION.into(),
-        },
+        remote: remote_info.clone(),
         ai_platform_token: TEST_TOKEN.into(),
     };
-    let mut harness = test_harness();
+    let git_tool = StubGitTool(remote_info);
+    let mut harness = TestHarness::new(TEST_TOKEN, git_tool);
 
     // Client sends newSession request (without meta)
     let request_id = harness.client_send(ClientRequest::NewSessionRequest(NewSessionRequest::new(
