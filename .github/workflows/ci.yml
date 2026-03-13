@@ -25,20 +25,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # We need it to install exactly the version of Rust specified in rust-toolchain
-      # otherwise custom components (like rustfmt) will be installed in wrong toolchain
-      - name: Read toolchain file
-        id: rust-toolchain
+      # In CI we want to rely on yaml to specify Rust toolchain version.
+      # To avoid any misconfigurations, we remove toolchain file in order to guarantee that
+      # the toolchain installed by dtolnay/rust-toolchain will be used
+      - name: Remove explicit-toolchain file
         # need to specify shell, because on Windows it's cmd by default
         shell: bash
-        run: |
-          echo "RUST_TOOLCHAIN=$(cat rust-toolchain)" >> $GITHUB_OUTPUT
+        run: rm -f rust-toolchain rust-toolchain.toml
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-          toolchain: ${{ steps.rust-toolchain.outputs.RUST_TOOLCHAIN }}
 
       - name: Install system packages
         if: runner.os == 'Linux'
