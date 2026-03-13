@@ -15,7 +15,7 @@ use agent_client_protocol::{
     ProtocolVersion, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use harness::{StubGitTool, TestHarness};
-use jcp::{Config, EndTurnMeta, GitRemoteInfo, NewSessionMeta, WorkingCopyInfo};
+use jcp::{EndTurnMeta, GitRemoteInfo, NewSessionMeta};
 use serde_json::Value;
 
 mod harness;
@@ -150,13 +150,10 @@ fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
 }
 
 fn test_harness() -> TestHarness {
-    let config = Config {
-        ai_platform_token: TEST_TOKEN.into(),
-    };
-    let git_tool = Box::new(StubGitTool(Ok(WorkingCopyInfo {
+    let git_tool = Box::new(StubGitTool(Ok(GitRemoteInfo {
         url: TEST_GIT_URL.into(),
         branch: TEST_BRANCH.into(),
         revision: TEST_REVISION.into(),
     })));
-    TestHarness::new(config, git_tool)
+    TestHarness::new(TEST_TOKEN, git_tool)
 }

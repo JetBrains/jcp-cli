@@ -1,49 +1,14 @@
-use async_trait::async_trait;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use jcp::{
-    GitTool, WorkingCopyInfo,
+    GitCommandTool,
     auth::{AccessTokens, get_access_tokens, login},
     keychain::{self, SecretBackend},
 };
-use std::path::Path;
-use std::process::Command;
 use std::{env, process};
 use tokio::runtime::Runtime;
 
-/// Reads git info by running git commands in the given directory
-pub struct GitCommandTool;
-
-#[async_trait]
-impl GitTool for GitCommandTool {
-    async fn read_working_copy_info(&self, path: &Path) -> Result<WorkingCopyInfo, String> {
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let url = run_git(&path, &["remote", "get-url", "origin"])?;
-            let branch = run_git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-            let revision = run_git(&path, &["rev-parse", "HEAD"])?;
-            Ok(WorkingCopyInfo {
-                url,
-                branch,
-                revision,
-            })
-        })
-        .await
-        .map_err(|e| format!("Git task failed: {e}"))?
-    }
-}
-
-fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Failed to execute git: {}", e))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
+const DEFAULT_JCP_URL: &str = "wss://api.stgn.jetbrains.cloud/agent-spawner/acp";
 
 #[derive(Parser)]
 #[command(name = "jcp", version)]
@@ -99,14 +64,12 @@ fn main() {
 
 fn run_adapter(keychain: &dyn SecretBackend) {
     use futures_util::StreamExt;
-    use jcp::{Adapter, Config, IoTransport, TrafficLog, WebSocketTransport};
+    use jcp::{Adapter, IoTransport, TrafficLog, WebSocketTransport};
     use tokio::io::{stdin, stdout};
     use tokio_tungstenite::connect_async;
     use tungstenite::client::IntoClientRequest;
 
-    let jcp_url = env::var("JCP_URL")
-        .ok()
-        .unwrap_or("wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into());
+    let jcp_url = env::var("JCP_URL").ok().unwrap_or(DEFAULT_JCP_URL.into());
 
     let tokens = authenticate(keychain);
 
@@ -117,10 +80,6 @@ fn run_adapter(keychain: &dyn SecretBackend) {
             .parse()
             .unwrap(),
     );
-
-    let config = Config {
-        ai_platform_token: tokens.ai_access_token,
-    };
 
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
     runtime.block_on(async {
@@ -133,17 +92,13 @@ fn run_adapter(keychain: &dyn SecretBackend) {
         let uplink = WebSocketTransport::new(ws_rx, ws_tx);
 
         let mut adapter = Adapter::new(
-            config,
-            Box::new(GitCommandTool),
             Box::new(downlink),
             Box::new(uplink),
+            Box::new(GitCommandTool),
+            tokens.ai_access_token,
         );
         adapter.set_traffic_log(traffic_log);
-        while adapter
-            .handle_next_message()
-            .await
-            .expect("Unable to handle message")
-        {}
+        adapter.run().await.expect("Unable to handle message");
     });
 }
 

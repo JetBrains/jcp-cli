@@ -9,7 +9,7 @@ use futures::{FutureExt, Sink, Stream};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::{collections::HashMap, io, path::Path};
+use std::{collections::HashMap, io, path::Path, process::Command};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines},
@@ -158,21 +158,37 @@ impl Transport for WebSocketTransport {
     }
 }
 
-/// Git working copy information: remote URL, branch, and revision
-#[derive(Clone)]
-pub struct WorkingCopyInfo {
-    pub url: String,
-    pub branch: String,
-    pub revision: String,
+/// Reads git repository information from a working copy.
+pub trait GitTool: Send + Sync {
+    fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, String>;
 }
 
-/// Reads git repository information from a working copy.
-///
-/// Implementations must be safe to call from async context (the adapter uses
-/// `spawn_blocking` for the real implementation).
-#[async_trait]
-pub trait GitTool: Send + Sync {
-    async fn read_working_copy_info(&self, path: &Path) -> Result<WorkingCopyInfo, String>;
+/// Reads git info by running git commands in the given directory
+pub struct GitCommandTool;
+
+impl GitTool for GitCommandTool {
+    fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, String> {
+        let url = run_git(path, &["remote", "get-url", "origin"])?;
+        let branch = run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        let revision = run_git(path, &["rev-parse", "HEAD"])?;
+        Ok(GitRemoteInfo {
+            url,
+            branch,
+            revision,
+        })
+    }
+}
+
+fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {}", e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Configuration for the ACP-JCP adapter
@@ -196,7 +212,7 @@ pub struct EndTurnMeta {
     pub target: GitRemoteInfo,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct GitRemoteInfo {
     #[serde(rename = "branch")]
     pub branch: String,
@@ -238,10 +254,10 @@ pub struct RawIncomingMessage<'a> {
 /// This struct processes messages from both channels using `tokio::select!`,
 /// allowing for synchronous test-driving without spawning separate tasks.
 pub struct Adapter {
-    config: Config,
     git_tool: Box<dyn GitTool>,
     client: Box<dyn Transport>,
     agent: Box<dyn Transport>,
+    ai_platform_token: String,
     traffic_log: TrafficLog,
 
     /// Mapping from prompt request id to session id
@@ -257,16 +273,16 @@ impl Adapter {
     /// - `downlink`: transport to the client (IDE)
     /// - `uplink`: transport to the server (JCP)
     pub fn new(
-        config: Config,
-        git_tool: Box<dyn GitTool>,
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
+        git_tool: Box<dyn GitTool>,
+        ai_platform_token: String,
     ) -> Self {
         Self {
-            config,
-            git_tool,
+            ai_platform_token,
             client,
             agent,
+            git_tool,
             traffic_log: TrafficLog::default(),
             prompt_request_mapping: HashMap::new(),
         }
@@ -393,15 +409,16 @@ impl Adapter {
 
             if let ClientRequest::NewSessionRequest(r) = &mut request {
                 // Read git info from the session's working directory
-                match self.git_tool.read_working_copy_info(&r.cwd).await {
-                    Ok(info) => {
+                //
+                // NOTE: we using blocking call in async context here. It will block current task.
+                // We do it to preserve simple testing model. The adapter loop will be blocked until
+                // we read git info anyway. It only makes sense to solve this issue if we're will move to a fully
+                // multiplexed implementation where different sessions are processed independently.
+                match self.git_tool.read_remote_info(&r.cwd) {
+                    Ok(remote) => {
                         let meta = NewSessionMeta {
-                            remote: GitRemoteInfo {
-                                branch: info.branch,
-                                url: info.url,
-                                revision: info.revision,
-                            },
-                            ai_platform_token: self.config.ai_platform_token.clone(),
+                            remote,
+                            ai_platform_token: self.ai_platform_token.clone(),
                         };
                         inject_new_session_meta(r, &meta)?;
                     }
@@ -637,12 +654,8 @@ mod tests {
 
     struct NullGitTool;
 
-    #[async_trait]
     impl GitTool for NullGitTool {
-        async fn read_working_copy_info(
-            &self,
-            _path: &std::path::Path,
-        ) -> Result<WorkingCopyInfo, String> {
+        fn read_remote_info(&self, _path: &std::path::Path) -> Result<GitRemoteInfo, String> {
             panic!("GitTool should not be called in this test")
         }
     }
@@ -673,14 +686,11 @@ mod tests {
             )
         };
 
-        let config = Config {
-            ai_platform_token: "unused".to_string(),
-        };
         let mut adapter = Adapter::new(
-            config,
-            Box::new(NullGitTool),
             Box::new(downlink),
             Box::new(uplink),
+            Box::new(NullGitTool),
+            "unused".to_string(),
         );
 
         let mut i = 0;

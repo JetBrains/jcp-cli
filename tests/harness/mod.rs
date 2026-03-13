@@ -9,18 +9,18 @@ use agent_client_protocol::{
 };
 use async_trait::async_trait;
 use futures::FutureExt;
-use jcp::{Adapter, AgentOutgoingMessage, ClientOutgoingMessage, Config, GitTool, Transport, WorkingCopyInfo};
+use jcp::{
+    Adapter, AgentOutgoingMessage, ClientOutgoingMessage, GitRemoteInfo, GitTool, Transport,
+};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
-use std::io;
-use std::path::Path;
+use std::{io, path::Path};
 use tokio::sync::mpsc;
 
-pub struct StubGitTool(pub Result<WorkingCopyInfo, String>);
+pub struct StubGitTool(pub Result<GitRemoteInfo, String>);
 
-#[async_trait]
 impl GitTool for StubGitTool {
-    async fn read_working_copy_info(&self, _path: &Path) -> Result<WorkingCopyInfo, String> {
+    fn read_remote_info(&self, _path: &Path) -> Result<GitRemoteInfo, String> {
         self.0.clone()
     }
 }
@@ -65,15 +65,15 @@ macro_rules! now_or_panic {
 
 impl TestHarness {
     /// Bootstrap a new test harness with the given config and git tool stub.
-    pub fn new(config: Config, git_tool: Box<dyn GitTool>) -> Self {
+    pub fn new(ai_token: &str, git_tool: Box<dyn GitTool>) -> Self {
         let (downlink_adapter, downlink_test) = ChannelTransport::pair(10);
         let (uplink_adapter, uplink_test) = ChannelTransport::pair(10);
 
         let adapter = Adapter::new(
-            config,
-            git_tool,
             Box::new(downlink_adapter),
             Box::new(uplink_adapter),
+            git_tool,
+            ai_token.to_string(),
         );
 
         Self {
