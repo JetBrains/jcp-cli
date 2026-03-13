@@ -150,10 +150,10 @@ fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
 }
 
 fn test_harness() -> TestHarness {
-    let git_tool = Box::new(StubGitTool(Ok(GitRemoteInfo {
+    let git_tool = StubGitTool(GitRemoteInfo {
         url: TEST_GIT_URL.into(),
         branch: TEST_BRANCH.into(),
         revision: TEST_REVISION.into(),
-    })));
+    });
     TestHarness::new(TEST_TOKEN, git_tool)
 }

@@ -75,9 +75,9 @@ fn run_outside_git_directory() {
     e2e.initialize_check().expect("Initialize should succeed");
 
     // NewSession should fail because cwd is not a git repository
-    let (response, _) = e2e.client_request::<NewSessionResponse>(
-        ClientRequest::NewSessionRequest(NewSessionRequest::new("./")),
-    );
+    let (response, _) = e2e.client_request::<NewSessionResponse>(ClientRequest::NewSessionRequest(
+        NewSessionRequest::new("./"),
+    ));
     match response {
         Ok(r) => panic!("JSON RPC error is expected. Got: {r:?}"),
         Err(e) => {

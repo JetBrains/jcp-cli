@@ -160,14 +160,14 @@ impl Transport for WebSocketTransport {
 
 /// Reads git repository information from a working copy.
 pub trait GitTool {
-    fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, String>;
+    fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, io::Error>;
 }
 
 /// Reads git info by running git commands in the given directory
 pub struct GitCommandTool;
 
 impl GitTool for GitCommandTool {
-    fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, String> {
+    fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, io::Error> {
         let url = run_git(path, &["remote", "get-url", "origin"])?;
         let branch = run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         let revision = run_git(path, &["rev-parse", "HEAD"])?;
@@ -179,16 +179,14 @@ impl GitTool for GitCommandTool {
     }
 }
 
-fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Failed to execute git: {}", e))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+fn run_git(cwd: &Path, args: &[&str]) -> Result<String, io::Error> {
+    let output = Command::new("git").current_dir(cwd).args(args).output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let description = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(io::Error::other(description))
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Configuration for the ACP-JCP adapter
@@ -426,7 +424,10 @@ impl Adapter {
                         let msg =
                             JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
                                 id: id.clone(),
-                                error: acp::Error::new(acp::ErrorCode::InvalidParams.into(), &e),
+                                error: acp::Error::new(
+                                    acp::ErrorCode::InvalidParams.into(),
+                                    e.to_string(),
+                                ),
                             }));
                         let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
                         self.client.send(value).await?;
@@ -655,7 +656,7 @@ mod tests {
     struct NullGitTool;
 
     impl GitTool for NullGitTool {
-        fn read_remote_info(&self, _path: &std::path::Path) -> Result<GitRemoteInfo, String> {
+        fn read_remote_info(&self, _path: &std::path::Path) -> Result<GitRemoteInfo, io::Error> {
             panic!("GitTool should not be called in this test")
         }
     }

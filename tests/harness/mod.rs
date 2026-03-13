@@ -17,11 +17,11 @@ use serde_json::Value as JsonValue;
 use std::{io, path::Path};
 use tokio::sync::mpsc;
 
-pub struct StubGitTool(pub Result<GitRemoteInfo, String>);
+pub struct StubGitTool(pub GitRemoteInfo);
 
 impl GitTool for StubGitTool {
-    fn read_remote_info(&self, _path: &Path) -> Result<GitRemoteInfo, String> {
-        self.0.clone()
+    fn read_remote_info(&self, _path: &Path) -> Result<GitRemoteInfo, io::Error> {
+        Ok(self.0.clone())
     }
 }
 
@@ -65,14 +65,14 @@ macro_rules! now_or_panic {
 
 impl TestHarness {
     /// Bootstrap a new test harness with the given config and git tool stub.
-    pub fn new(ai_token: &str, git_tool: Box<dyn GitTool>) -> Self {
+    pub fn new(ai_token: &str, git_tool: impl GitTool + 'static) -> Self {
         let (downlink_adapter, downlink_test) = ChannelTransport::pair(10);
         let (uplink_adapter, uplink_test) = ChannelTransport::pair(10);
 
         let adapter = Adapter::new(
             Box::new(downlink_adapter),
             Box::new(uplink_adapter),
-            git_tool,
+            Box::new(git_tool),
             ai_token.to_string(),
         );
 
