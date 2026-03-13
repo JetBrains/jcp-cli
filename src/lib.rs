@@ -189,12 +189,6 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, io::Error> {
     }
 }
 
-/// Configuration for the ACP-JCP adapter
-#[derive(Clone)]
-pub struct Config {
-    pub ai_platform_token: String,
-}
-
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct NewSessionMeta {
     #[serde(rename = "remote")]
