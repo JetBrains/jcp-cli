@@ -159,7 +159,7 @@ impl Transport for WebSocketTransport {
 }
 
 /// Reads git repository information from a working copy.
-pub trait GitTool: Send + Sync {
+pub trait GitTool {
     fn read_remote_info(&self, path: &Path) -> Result<GitRemoteInfo, String>;
 }
 
