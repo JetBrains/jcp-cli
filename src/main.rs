@@ -1,12 +1,11 @@
-use agent_client_protocol::{AgentSide, ClientRequest, ErrorCode, RequestId, Side};
+use agent_client_protocol::{AgentSide, ClientRequest, ErrorCode, RequestId};
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use futures_util::StreamExt;
 use jcp::{
-    Adapter, GitCommandTool, IoTransport, RawIncomingMessage, TrafficLog, Transport,
-    WebSocketTransport,
+    Adapter, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
     auth::{self, AccessTokens, get_access_tokens, login},
-    create_json_rpc_error,
+    create_json_rpc_error, decode_acp_request,
     keychain::{self, SecretBackend},
     request_id, to_io_invalid_data_err,
 };
@@ -147,14 +146,17 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 ///
 /// Returns the connected [`WebSocketTransport`], and a resolved [`AccessTokens`] on success,
 /// or an error message string that can be forwarded to the client.
+///
+/// After this method returned both transport considered ready and can be passed to an adapter
 async fn handshake_and_authenticate(
     client: &mut dyn Transport,
     initialize_request: JsonValue,
     keychain: &dyn SecretBackend,
     jcp_url: &str,
 ) -> Result<(WebSocketTransport, AccessTokens), Error> {
-    // Checking that the message of a proper type
-    let ClientRequest::InitializeRequest(_) = decode_acp_request::<AgentSide>(&initialize_request)?
+    // Checking that this is inded InitializeRequest
+    let Some((_, _, ClientRequest::InitializeRequest(_))) =
+        decode_acp_request::<AgentSide>(&initialize_request)?
     else {
         return Err(io::Error::other("InititializeRequest expected").into());
     };
@@ -193,16 +195,6 @@ async fn handshake_and_authenticate(
         .expect("Unable to send response");
 
     Ok((agent, tokens))
-}
-
-fn decode_acp_request<T: Side>(json_rpc: &JsonValue) -> Result<T::InRequest, Error> {
-    let msg_str = json_rpc.to_string();
-    let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
-    let method = rpc_msg.method.ok_or(io::Error::new(
-        io::ErrorKind::UnexpectedEof,
-        "Not method name is provided",
-    ))?;
-    Ok(T::decode_request(method, rpc_msg.params)?)
 }
 
 /// Retrieves access tokens.

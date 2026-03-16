@@ -389,16 +389,9 @@ impl Adapter {
     async fn handle_client_message(&mut self, msg: JsonValue) -> io::Result<()> {
         let _ = self.traffic_log.write(&msg).await;
 
-        // This is ugly hack, but we need to serialize here back to string, otherwise
-        // we can not use AgentSide::decode_request()
-        let msg_str = msg.to_string();
-        let rpc_msg: RawIncomingMessage<'_> =
-            serde_json::from_str(&msg_str).map_err(to_io_invalid_data_err)?;
-
-        if let Some((method, id)) = rpc_msg.method.zip(rpc_msg.id) {
-            let mut request = AgentSide::decode_request(method, rpc_msg.params)
-                .map_err(to_io_invalid_data_err)?;
-
+        if let Some((id, method, mut request)) =
+            decode_acp_request::<AgentSide>(&msg).map_err(to_io_invalid_data_err)?
+        {
             if let ClientRequest::NewSessionRequest(r) = &mut request {
                 // Read git info from the session's working directory
                 //
@@ -491,6 +484,26 @@ pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
         JsonValue::Number(n) => n.as_i64().map(RequestId::Number),
         JsonValue::String(s) => Some(RequestId::Str(s.clone())),
         _ => None,
+    }
+}
+
+pub fn decode_acp_request<T: Side>(
+    json_rpc: &JsonValue,
+) -> Result<Option<(RequestId, String, T::InRequest)>, acp::Error> {
+    // This is ugly hack, but we need to serialize here back to string, otherwise
+    // we can not use AgentSide::decode_request()
+    let msg_str = json_rpc.to_string();
+    // SAFETY: unwrap() is safe here, becase we're serialized proper json on a previous line
+    let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
+    if let Some((method, id)) = rpc_msg.method.zip(rpc_msg.id) {
+        Ok(Some((
+            id,
+            method.to_string(),
+            T::decode_request(method, rpc_msg.params)?,
+        )))
+    } else {
+        // Not a request
+        Ok(None)
     }
 }
 
