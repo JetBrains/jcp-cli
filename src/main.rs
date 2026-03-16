@@ -101,7 +101,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 
         // This code is rather tricky.
         //
-        // We generally are not intrested in client transport errors, because if client transport failed
+        // We generally are not interested in client transport errors, because if client transport failed
         // we don't have any other option but panic. But in case of any other error we need to properly
         // report error as an JSON RPC error to a client, because this is how IDE will know something
         // goes wrong and properly show error message to an end user.
