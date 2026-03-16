@@ -485,6 +485,15 @@ pub fn create_json_rpc_error(
     serde_json::to_value(&msg)
 }
 
+pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
+    match &json_rpc["id"] {
+        JsonValue::Null => Some(RequestId::Null),
+        JsonValue::Number(n) => n.as_i64().map(RequestId::Number),
+        JsonValue::String(s) => Some(RequestId::Str(s.clone())),
+        _ => None,
+    }
+}
+
 fn create_session_update_notification(
     session_id: SessionId,
     message: impl Into<String>,

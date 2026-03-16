@@ -1,18 +1,16 @@
-use agent_client_protocol::{
-    self as acp, AgentSide, ClientRequest, ErrorCode, JsonRpcMessage, RequestId, Response, Side,
-};
+use agent_client_protocol::{AgentSide, ClientRequest, ErrorCode, RequestId, Side};
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use futures_util::StreamExt;
 use jcp::{
-    Adapter, AgentOutgoingMessage, GitCommandTool, IoTransport, RawIncomingMessage, TrafficLog,
-    Transport, WebSocketTransport,
+    Adapter, GitCommandTool, IoTransport, RawIncomingMessage, TrafficLog, Transport,
+    WebSocketTransport,
     auth::{self, AccessTokens, get_access_tokens, login},
     create_json_rpc_error,
     keychain::{self, SecretBackend},
-    to_io_invalid_data_err,
+    request_id, to_io_invalid_data_err,
 };
-use reqwest::blocking::RequestBuilder;
+use serde_json::Value as JsonValue;
 use std::{env, io, process};
 use thiserror::Error;
 use tokio::io::{stdin, stdout};
@@ -48,16 +46,13 @@ enum Error {
     UnableToGetAccessToken(#[from] auth::AuthError),
 
     #[error("IO error: {0}")]
-    IoError(#[from] io::Error),
-
-    #[error("Unable to read refresh token: {0}")]
-    UnableToReadRefreshToken(#[source] io::Error),
+    Io(#[from] io::Error),
 
     #[error("No refresh token found")]
     NoRefreshToken,
 
     #[error("WebSocket failed: {0}")]
-    WebSocketError(#[from] tungstenite::Error),
+    WebSocket(#[from] tungstenite::Error),
 
     #[error("Invalid ACP message: {0}")]
     InvalidAcpMessage(#[from] agent_client_protocol::Error),
@@ -102,18 +97,28 @@ fn run_adapter(keychain: &dyn SecretBackend) {
     runtime.block_on(async {
         let traffic_log = TrafficLog::new(env::var("TRAFFIC_LOG").ok()).await;
 
-        let mut downlink = IoTransport::new(stdin(), stdout());
+        let mut client = IoTransport::new(stdin(), stdout());
 
-        // Authenticate and establish the uplink WebSocket connection.
+        // This code is rather tricky.
         //
-        // NOTE: authenticate() is a blocking call executed inside the async context.
-        // This is intentional — we drive initialization sequentially and there are no
-        // concurrent tasks running at this point.
-        match initialize_transports(&mut downlink, keychain, &jcp_url).await {
+        // We generally are not intrested in client transport errors, because if client transport failed
+        // we don't have any other option but panic. But in case of any other error we need to properly
+        // report error as an JSON RPC error to a client, because this is how IDE will know something
+        // goes wrong and properly show error message to an end user.
+
+        // Read the first message from the client, which must be an InitializeRequest
+        let init_msg = client
+            .recv()
+            .await
+            .expect("Unable to read message")
+            .expect("Unexpected EOF");
+        let request_id = request_id(&init_msg).unwrap_or(RequestId::Null);
+
+        match handshake_and_authenticate(&mut client, init_msg, keychain, &jcp_url).await {
             Ok((uplink, tokens)) => {
                 // Run the adapter for the remainder of the session
                 let mut adapter = Adapter::new(
-                    Box::new(downlink),
+                    Box::new(client),
                     Box::new(uplink),
                     Box::new(GitCommandTool),
                     tokens.ai_access_token,
@@ -126,10 +131,11 @@ fn run_adapter(keychain: &dyn SecretBackend) {
             }
             Err(e) => {
                 // Report the initialization failure to the client as a JSON-RPC error
+                // Error reporting is happening via JSON RPC channel, we can not reply on IDE monitoring stderr
                 if let Ok(err) =
-                    create_json_rpc_error(ErrorCode::InvalidRequest, e.to_string(), RequestId::Null)
+                    create_json_rpc_error(ErrorCode::InvalidRequest, e.to_string(), request_id)
                 {
-                    let _ = downlink.send(err).await;
+                    let _ = client.send(err).await;
                 }
                 panic!("{e}");
             }
@@ -139,33 +145,20 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 
 /// Authenticates and opens a WebSocket connection to the JCP uplink.
 ///
-/// Returns the connected [`WebSocketTransport`] and the resolved [`AccessTokens`] on success,
+/// Returns the connected [`WebSocketTransport`], and a resolved [`AccessTokens`] on success,
 /// or an error message string that can be forwarded to the client.
-async fn initialize_transports(
+async fn handshake_and_authenticate(
     client: &mut dyn Transport,
+    initialize_request: JsonValue,
     keychain: &dyn SecretBackend,
     jcp_url: &str,
 ) -> Result<(WebSocketTransport, AccessTokens), Error> {
-    // Read the first message from the client, which must be an InitializeRequest
-    let init_msg = client.recv().await?.ok_or(io::Error::new(
-        io::ErrorKind::UnexpectedEof,
-        "Client is expected to send InitializeRequest",
-    ))?;
-
-    // Parse out the request ID so we can send a proper error response if needed
-    let msg_str = init_msg.to_string();
-    let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
-    let request_id = rpc_msg.id.clone().unwrap_or(RequestId::Null);
-    let method = rpc_msg.method.ok_or(io::Error::new(
-        io::ErrorKind::UnexpectedEof,
-        "Not method id is provided",
-    ))?;
-    let ClientRequest::InitializeRequest(_) = AgentSide::decode_request(method, rpc_msg.params)?
+    // Checking that the message of a proper type
+    let ClientRequest::InitializeRequest(_) = decode_acp_request::<AgentSide>(&initialize_request)?
     else {
         return Err(io::Error::other("InititializeRequest expected").into());
     };
 
-    // Retrieving access tokens
     let tokens = authenticate(keychain)?;
 
     let mut request = jcp_url
@@ -184,16 +177,32 @@ async fn initialize_transports(
     let mut agent = WebSocketTransport::new(ws_rx, ws_tx);
 
     // Forward InitializeRequest to the uplink server
-    agent.send(init_msg).await?;
+    agent.send(initialize_request).await?;
 
-    // Read InitializeResponse from the uplink and forward it to the client
     let init_response = agent.recv().await?.ok_or(io::Error::new(
         io::ErrorKind::UnexpectedEof,
-        "Agent is expected to send InitializeResponse",
+        "Agent reset connection",
     ))?;
-    client.send(init_response).await?;
+    // Forwarding InitializeResponse from an agent to a client. We're assuming this is reply to
+    // InitializationRequest, but it might be not a successful result, but a JSON RPC error, hence we do not
+    // deserialize it here
+    client
+        .send(init_response)
+        .await
+        // If client transport has failed we don't have any other option but panic
+        .expect("Unable to send response");
 
     Ok((agent, tokens))
+}
+
+fn decode_acp_request<T: Side>(json_rpc: &JsonValue) -> Result<T::InRequest, Error> {
+    let msg_str = json_rpc.to_string();
+    let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
+    let method = rpc_msg.method.ok_or(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "Not method name is provided",
+    ))?;
+    Ok(T::decode_request(method, rpc_msg.params)?)
 }
 
 /// Retrieves access tokens.
