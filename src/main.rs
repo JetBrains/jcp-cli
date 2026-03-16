@@ -154,7 +154,7 @@ async fn handshake_and_authenticate(
     keychain: &dyn SecretBackend,
     jcp_url: &str,
 ) -> Result<(WebSocketTransport, AccessTokens), Error> {
-    // Checking that this is inded InitializeRequest
+    // Checking that this is indeed InitializeRequest
     let Some((_, _, ClientRequest::InitializeRequest(_))) =
         decode_acp_request::<AgentSide>(&initialize_request)?
     else {

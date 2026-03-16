@@ -493,7 +493,7 @@ pub fn decode_acp_request<T: Side>(
     // This is ugly hack, but we need to serialize here back to string, otherwise
     // we can not use AgentSide::decode_request()
     let msg_str = json_rpc.to_string();
-    // SAFETY: unwrap() is safe here, becase we're serialized proper json on a previous line
+    // SAFETY: unwrap() is safe here, because we're serialized proper json on a previous line
     let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
     if let Some((method, id)) = rpc_msg.method.zip(rpc_msg.id) {
         Ok(Some((
