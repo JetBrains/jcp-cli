@@ -472,6 +472,19 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
     }
 }
 
+/// Creates a new JSON RPC error with given description and request id
+pub fn create_json_rpc_error(
+    error_code: acp::ErrorCode,
+    msg: impl Into<String>,
+    original_request_id: RequestId,
+) -> serde_json::Result<serde_json::Value> {
+    let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
+        id: original_request_id,
+        error: acp::Error::new(error_code.into(), msg.into()),
+    }));
+    serde_json::to_value(&msg)
+}
+
 fn create_session_update_notification(
     session_id: SessionId,
     message: impl Into<String>,
@@ -522,7 +535,9 @@ fn inject_new_session_meta(req: &mut NewSessionRequest, meta: &NewSessionMeta) -
     Ok(())
 }
 
-fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) -> io::Error {
+pub fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(
+    e: E,
+) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
 }
 

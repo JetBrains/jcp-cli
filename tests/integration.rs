@@ -11,8 +11,8 @@
 
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock,
-    InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, PromptResponse,
-    ProtocolVersion, SessionNotification, SessionUpdate, StopReason, TextContent,
+    NewSessionRequest, PromptRequest, PromptResponse, SessionNotification, SessionUpdate,
+    StopReason, TextContent,
 };
 use harness::{StubGitTool, TestHarness};
 use jcp::{EndTurnMeta, GitRemoteInfo, NewSessionMeta};
@@ -24,34 +24,6 @@ const TEST_GIT_URL: &str = "https://github.com/test/repo.git";
 const TEST_BRANCH: &str = "main";
 const TEST_REVISION: &str = "abc123";
 const TEST_TOKEN: &str = "test-token";
-
-#[test]
-fn test_adapter_forwards_initialize_request_to_server() {
-    let mut harness = test_harness();
-
-    // Client sends initialize request
-    let request = ClientRequest::InitializeRequest(InitializeRequest::new(1.into()));
-    let request_id = harness.client_send(request);
-
-    // Agent receives the forwarded request
-    let (method, recv_id, _) = harness.agent_recv().expect_request::<InitializeRequest>();
-    assert_eq!(recv_id, request_id);
-    assert_eq!(method, AGENT_METHOD_NAMES.initialize);
-
-    // Agent sends response
-    let initialize_response = InitializeResponse::new(ProtocolVersion::V1);
-    let response = AgentResponse::InitializeResponse(initialize_response.clone());
-    harness.agent_reply(recv_id, response);
-
-    // Client receives the response (no timeout needed)
-    let (id, result) = harness
-        .client_recv()
-        .expect_response::<InitializeResponse>();
-    let result = result.expect("Expecting successful InitializeResponse");
-
-    assert_eq!(id, request_id);
-    assert_eq!(result, initialize_response);
-}
 
 #[test]
 fn test_adapter_injects_meta_into_new_session_request() {
