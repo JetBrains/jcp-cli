@@ -265,7 +265,7 @@ impl Adapter {
     /// Create a new adapter with the given configuration and transports.
     ///
     /// - `client` (downlink): transport to the client (IDE)
-    /// - `agent` (uplin): transport to the server (JCP)
+    /// - `agent` (uplink): transport to the server (JCP)
     /// - `git_tool`: reads git info from working copies on new session requests
     ///
     /// Both transports are assumed to be initialized. Meaning that `InitializeRequest`/`InitializeResponse`
