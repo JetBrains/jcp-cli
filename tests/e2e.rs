@@ -117,8 +117,8 @@ fn run_without_login() {
 
     let msg = e.to_string();
     assert!(
-        msg.contains(&jcp::Error::NoRefreshToken.to_string()),
-        "Expecting message about missing refresh key. Got: {msg}"
+        msg.contains("`jcp login`"),
+        "Expecting message saying that user need to do `jcp login` first. Got: {msg}"
     );
 }
 

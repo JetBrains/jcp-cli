@@ -4,15 +4,16 @@ use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use futures_util::StreamExt;
 use jcp::{
-    Adapter, Error, GitCommandTool, IoTransport, JCP_URL_ENV_NAME, TrafficLog, Transport,
+    Adapter, GitCommandTool, IoTransport, JCP_URL_ENV_NAME, TrafficLog, Transport,
     WebSocketTransport,
-    auth::{AccessTokens, get_access_tokens, login},
+    auth::{self, AccessTokens, get_access_tokens, login},
     decode_acp_request,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
     request_id,
 };
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
+use thiserror::Error;
 use tokio::io::{stdin, stdout};
 use tokio::runtime::Runtime;
 use tungstenite::client::IntoClientRequest;
@@ -217,12 +218,41 @@ fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
     Ok(access_tokens)
 }
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("Authentication error: {0}")]
+    UnableToGetAccessToken(#[from] auth::AuthError),
+
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("No refresh token found")]
+    NoRefreshToken,
+
+    #[error("WebSocket failed: {0}")]
+    WebSocket(#[from] tungstenite::Error),
+
+    #[error("Invalid URL: {1}, url: {0}")]
+    InvalidUrl(String, tungstenite::Error),
+
+    #[error("Invalid ACP message: {0}")]
+    InvalidAcpMessage(#[from] acp::Error),
+}
+
 /// Creates a new JSON RPC error replyfor a given request id
 fn create_json_rpc_error(
     error: &Error,
     original_request_id: RequestId,
 ) -> serde_json::Result<JsonValue> {
-    let error = acp::Error::new(ErrorCode::InvalidRequest.into(), error.to_string());
+    let message = match error {
+        Error::UnableToGetAccessToken(e) => format!(
+            "Unable to get Access Tokens. Try relogin with `jcp logout && jcp login`. Details: {e}"
+        ),
+        Error::NoRefreshToken => "Please login with `jcp login` first".to_string(),
+        Error::InvalidUrl(url, _) => format!("Invalid URL given: {url}"),
+        e => e.to_string(),
+    };
+    let error = acp::Error::new(ErrorCode::InvalidRequest.into(), message);
     let message = acp::Response::<()>::new(original_request_id, Err(error));
     serde_json::to_value(acp::JsonRpcMessage::wrap(message))
 }

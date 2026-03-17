@@ -10,7 +10,6 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::{collections::HashMap, io, path::Path, process::Command};
-use thiserror::Error;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines},
@@ -555,27 +554,6 @@ fn inject_new_session_meta(req: &mut NewSessionRequest, meta: &NewSessionMeta) -
 
 fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
-}
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Authentication error: {0}")]
-    UnableToGetAccessToken(#[from] auth::AuthError),
-
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("No refresh token found")]
-    NoRefreshToken,
-
-    #[error("WebSocket failed: {0}")]
-    WebSocket(#[from] tungstenite::Error),
-
-    #[error("Invalid URL: {1}, url: {0}")]
-    InvalidUrl(String, tungstenite::Error),
-
-    #[error("Invalid ACP message: {0}")]
-    InvalidAcpMessage(#[from] acp::Error),
 }
 
 #[cfg(test)]
