@@ -8,7 +8,9 @@ use agent_client_protocol::{
 use jcp::{
     AgentOutgoingMessage, ClientOutgoingMessage, RawIncomingMessage,
     auth::AccessTokens,
-    keychain::{AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, KEYCHAIN_FILE_ENV_NAME},
+    keychain::{
+        AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, file::KEYCHAIN_FILE_ENV_NAME,
+    },
 };
 use serde::de::DeserializeOwned;
 use std::{

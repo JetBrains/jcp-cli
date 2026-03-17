@@ -10,10 +10,6 @@ use std::io;
 /// Account name for storing the OAuth refresh token
 const REFRESH_TOKEN_KEY: &str = "refresh-token";
 
-/// Env variable name that defines path to a keychain file in debug build
-#[cfg(debug_assertions)]
-pub const KEYCHAIN_FILE_ENV_NAME: &str = "KEYCHAIN_FILE";
-
 pub const AI_PLATFORM_TOKEN_ENV_NAME: &str = "AI_PLATFORM_TOKEN";
 pub const JCP_ACCESS_TOKEN_ENV_NAME: &str = "JCP_ACCESS_TOKEN";
 
@@ -57,7 +53,7 @@ pub fn active_keychain() -> Box<dyn SecretBackend> {
     // get dead code warning, without any explicit `#[allow(dead_code)]`
     #[cfg(debug_assertions)]
     if cfg!(debug_assertions) {
-        Box::new(file::FileBackend::new())
+        Box::new(file::FileBackend::default())
     } else {
         platform_keychain()
     }
@@ -290,16 +286,18 @@ mod macos {
 /// This module is intentonally marked as `cfg(debug_assertions)` in order to guarantee that it will
 /// never be published and unintentionally used to store secrets in the production context.
 #[cfg(debug_assertions)]
-mod file {
+pub mod file {
     use super::*;
     use serde::{Deserialize, Serialize};
     use std::{collections::HashMap, env, fs, io, path::PathBuf};
 
+    /// Env variable name that defines path to a keychain file in debug build
+    pub const KEYCHAIN_FILE_ENV_NAME: &str = "KEYCHAIN_FILE";
     const CONFIG_FILE_NAME: &str = "secrets.toml";
     const APP_NAME: &str = "jcp";
 
     /// File-based backend that stores secrets in a TOML file.
-    pub struct FileBackend {
+    pub(super) struct FileBackend {
         path: PathBuf,
     }
 
@@ -309,8 +307,8 @@ mod file {
         secrets: HashMap<String, String>,
     }
 
-    impl FileBackend {
-        pub fn new() -> Self {
+    impl Default for FileBackend {
+        fn default() -> Self {
             let path = if let Ok(config_path) = env::var(KEYCHAIN_FILE_ENV_NAME) {
                 PathBuf::from(config_path)
             } else {
@@ -321,7 +319,9 @@ mod file {
             };
             Self { path }
         }
+    }
 
+    impl FileBackend {
         fn read_file(&self) -> io::Result<SecretsFile> {
             if !self.path.exists() {
                 return Ok(SecretsFile::default());
