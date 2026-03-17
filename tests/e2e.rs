@@ -5,7 +5,11 @@ use agent_client_protocol::{
     ProtocolVersion, Request, RequestId, Response, SessionNotification, SessionUpdate, Side,
     StopReason, TextContent,
 };
-use jcp::{AgentOutgoingMessage, ClientOutgoingMessage, RawIncomingMessage};
+use jcp::{
+    AgentOutgoingMessage, ClientOutgoingMessage, RawIncomingMessage,
+    auth::AccessTokens,
+    keychain::{AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, KEYCHAIN_FILE_ENV_NAME},
+};
 use serde::de::DeserializeOwned;
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -92,6 +96,30 @@ fn run_outside_git_directory() {
     }
 }
 
+#[test]
+fn run_without_login() {
+    // Emulating cli without login
+    let mut e2e = E2eHarness::bootstrap(E2eConfig {
+        keychain_file: Some("./not-existing-keychain-file".into()),
+        suppress_stderr: true,
+        explicit_access_tokens: None,
+        start_server: false,
+        ..Default::default()
+    });
+
+    let Err(e) = e2e.initialize_check() else {
+        panic!(
+            "InitializeRequest must fail, because we are not logged in. Instead got successful result"
+        );
+    };
+
+    let msg = e.to_string();
+    assert!(
+        msg.contains(&jcp::Error::NoRefreshToken.to_string()),
+        "Expecting message about missing refresh key. Got: {msg}"
+    );
+}
+
 /// E2E test harness that manages mock server and jcp processes.
 ///
 /// Starts an in-process mock ACP server on a background task
@@ -105,13 +133,32 @@ struct E2eHarness {
     server_handle: Option<JoinHandle<()>>,
 }
 
-#[derive(Default)]
 #[non_exhaustive]
 struct E2eConfig {
     project_dir: Option<PathBuf>,
     /// If true, stderr of jcp binary will be sent to /dev/null
     /// Set it if test scenario expects to generate errors/warning is jcp binary
     suppress_stderr: bool,
+    /// Whether we need to start an ACP server. Some tests that checks fully local beheviour
+    /// do not have to start server at all
+    start_server: bool,
+    keychain_file: Option<PathBuf>,
+    explicit_access_tokens: Option<AccessTokens>,
+}
+
+impl Default for E2eConfig {
+    fn default() -> Self {
+        Self {
+            project_dir: None,
+            suppress_stderr: false,
+            keychain_file: None,
+            start_server: true,
+            explicit_access_tokens: Some(AccessTokens {
+                jcp_access_token: "test-token".into(),
+                ai_access_token: "test-access-token".into(),
+            }),
+        }
+    }
 }
 
 impl E2eHarness {
@@ -122,15 +169,25 @@ impl E2eHarness {
         let addr = listener.local_addr().unwrap();
         let url = Url::from_str(&format!("ws://{addr}")).unwrap();
 
-        let server_handle = thread::spawn(move || serve_acp_client(listener));
+        let server_handle = if config.start_server {
+            Some(thread::spawn(move || serve_acp_client(listener)))
+        } else {
+            None
+        };
 
         let mut cmd = Command::new(get_jcp_binary_path());
         cmd.args(["acp"])
             .env("JCP_URL", url.as_str())
-            .env("AI_PLATFORM_TOKEN", "test-token")
-            .env("JCP_ACCESS_TOKEN", "test-access-token")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
+
+        if let Some(keychain_file) = config.keychain_file {
+            cmd.env(KEYCHAIN_FILE_ENV_NAME, keychain_file.to_str().unwrap());
+        }
+        if let Some(access_tokens) = config.explicit_access_tokens {
+            cmd.env(AI_PLATFORM_TOKEN_ENV_NAME, access_tokens.ai_access_token)
+                .env(JCP_ACCESS_TOKEN_ENV_NAME, access_tokens.jcp_access_token);
+        }
 
         if let Some(project_dir) = config.project_dir {
             cmd.current_dir(project_dir);
@@ -150,7 +207,7 @@ impl E2eHarness {
                 stdout,
             },
             next_request_id: 1,
-            server_handle: Some(server_handle),
+            server_handle,
         }
     }
 

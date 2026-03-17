@@ -4,15 +4,14 @@ use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use futures_util::StreamExt;
 use jcp::{
-    Adapter, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
-    auth::{self, AccessTokens, get_access_tokens, login},
+    Adapter, Error, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
+    auth::{AccessTokens, get_access_tokens, login},
     decode_acp_request,
-    keychain::{self, SecretBackend},
+    keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
     request_id, to_io_invalid_data_err,
 };
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
-use thiserror::Error;
 use tokio::io::{stdin, stdout};
 use tokio::runtime::Runtime;
 use tungstenite::client::IntoClientRequest;
@@ -37,24 +36,6 @@ enum Commands {
 
     /// Run ACP adapter
     Acp,
-}
-
-#[derive(Error, Debug)]
-enum Error {
-    #[error("Authentication error: {0}")]
-    UnableToGetAccessToken(#[from] auth::AuthError),
-
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-
-    #[error("No refresh token found")]
-    NoRefreshToken,
-
-    #[error("WebSocket failed: {0}")]
-    WebSocket(#[from] tungstenite::Error),
-
-    #[error("Invalid ACP message: {0}")]
-    InvalidAcpMessage(#[from] agent_client_protocol::Error),
 }
 
 fn main() {
@@ -202,8 +183,8 @@ async fn handshake_and_authenticate(
 /// If not, the refresh token is retrieved from the keychain and fresh access tokens are requested.
 /// `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` env variables still allow overriding respective tokens.
 fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
-    let jb_ai = env::var("AI_PLATFORM_TOKEN").ok();
-    let jcp = env::var("JCP_ACCESS_TOKEN").ok();
+    let jb_ai = env::var(AI_PLATFORM_TOKEN_ENV_NAME).ok();
+    let jcp = env::var(JCP_ACCESS_TOKEN_ENV_NAME).ok();
 
     let access_tokens = if let Some((jb_ai_token, jcp_token)) = jb_ai.as_ref().zip(jcp.as_ref()) {
         AccessTokens {
