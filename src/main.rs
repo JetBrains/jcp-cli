@@ -1,11 +1,12 @@
-use agent_client_protocol::{AgentSide, ClientRequest, ErrorCode, RequestId};
+use acp::{AgentSide, ClientRequest, ErrorCode, RequestId};
+use agent_client_protocol as acp;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use futures_util::StreamExt;
 use jcp::{
     Adapter, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
     auth::{self, AccessTokens, get_access_tokens, login},
-    create_json_rpc_error, decode_acp_request,
+    decode_acp_request,
     keychain::{self, SecretBackend},
     request_id, to_io_invalid_data_err,
 };
@@ -14,7 +15,6 @@ use std::{env, io, process};
 use thiserror::Error;
 use tokio::io::{stdin, stdout};
 use tokio::runtime::Runtime;
-use tokio_tungstenite::connect_async;
 use tungstenite::client::IntoClientRequest;
 
 const DEFAULT_JCP_URL: &str = "wss://api.stgn.jetbrains.cloud/agent-spawner/acp";
@@ -103,7 +103,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
         // We generally are not interested in client transport errors, because if client transport failed
         // we don't have any other option but panic. But in case of any other error we need to properly
         // report error as an JSON RPC error to a client, because this is how IDE will know something
-        // goes wrong and properly show error message to an end user.
+        // went wrong and properly show error message to an end user.
 
         // Read the first message from the client, which must be an InitializeRequest
         let init_msg = client
@@ -131,9 +131,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
             Err(e) => {
                 // Report the initialization failure to the client as a JSON-RPC error
                 // Error reporting is happening via JSON RPC channel, we can not reply on IDE monitoring stderr
-                if let Ok(err) =
-                    create_json_rpc_error(ErrorCode::InvalidRequest, e.to_string(), request_id)
-                {
+                if let Ok(err) = create_json_rpc_error(&e, request_id) {
                     let _ = client.send(err).await;
                 }
                 panic!("{e}");
@@ -173,7 +171,8 @@ async fn handshake_and_authenticate(
             .map_err(to_io_invalid_data_err)?,
     );
 
-    let (ws_stream, _) = connect_async(request).await?;
+    // Establishing WebSocket connection
+    let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
     let (ws_tx, ws_rx) = ws_stream.split();
 
     let mut agent = WebSocketTransport::new(ws_rx, ws_tx);
@@ -220,4 +219,14 @@ fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
         }
     };
     Ok(access_tokens)
+}
+
+/// Creates a new JSON RPC error replyfor a given request id
+fn create_json_rpc_error(
+    error: &Error,
+    original_request_id: RequestId,
+) -> serde_json::Result<JsonValue> {
+    let error = acp::Error::new(ErrorCode::InvalidRequest.into(), error.to_string());
+    let message = acp::Response::<()>::new(original_request_id, Err(error));
+    serde_json::to_value(acp::JsonRpcMessage::wrap(message))
 }

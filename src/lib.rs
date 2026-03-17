@@ -465,19 +465,6 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
     }
 }
 
-/// Creates a new JSON RPC error with given description and request id
-pub fn create_json_rpc_error(
-    error_code: acp::ErrorCode,
-    msg: impl Into<String>,
-    original_request_id: RequestId,
-) -> serde_json::Result<serde_json::Value> {
-    let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
-        id: original_request_id,
-        error: acp::Error::new(error_code.into(), msg.into()),
-    }));
-    serde_json::to_value(&msg)
-}
-
 pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
     match &json_rpc["id"] {
         JsonValue::Null => Some(RequestId::Null),
