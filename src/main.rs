@@ -137,7 +137,7 @@ async fn handshake_and_authenticate(
     let Some((_, _, ClientRequest::InitializeRequest(_))) =
         decode_acp_request::<AgentSide>(&initialize_request)?
     else {
-        return Err(io::Error::other("InititializeRequest expected").into());
+        return Err(io::Error::other("InitializeRequest expected").into());
     };
 
     let tokens = authenticate(keychain)?;
