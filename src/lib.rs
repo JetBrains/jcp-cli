@@ -269,8 +269,8 @@ impl Adapter {
     /// - `agent` (uplin): transport to the server (JCP)
     /// - `git_tool`: reads git info from working copies on new session requests
     ///
-    /// Both transport are assumed to be initialized. Meaning that `InitializingRequest`/`InitializingResponse`
-    /// already happened
+    /// Both transports are assumed to be initialized. Meaning that `InitializeRequest`/`InitializeResponse`
+    /// already processed by agent and client respectively
     pub fn new(
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
