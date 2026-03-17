@@ -89,7 +89,8 @@ fn run_adapter(keychain: &dyn SecretBackend) {
         // report error as an JSON RPC error to a client, because this is how IDE will know something
         // went wrong and properly show error message to an end user.
 
-        // Read the first message from the client, which must be an InitializeRequest
+        // Read the first message from the client in order to save request_id which we need to
+        // properly report errors if they will happen
         let init_msg = client
             .recv()
             .await
