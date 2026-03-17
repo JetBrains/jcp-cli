@@ -4,11 +4,12 @@ use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use futures_util::StreamExt;
 use jcp::{
-    Adapter, Error, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
+    Adapter, Error, GitCommandTool, IoTransport, JCP_URL_ENV_NAME, TrafficLog, Transport,
+    WebSocketTransport,
     auth::{AccessTokens, get_access_tokens, login},
     decode_acp_request,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
-    request_id, to_io_invalid_data_err,
+    request_id,
 };
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
@@ -71,7 +72,9 @@ fn main() {
 }
 
 fn run_adapter(keychain: &dyn SecretBackend) {
-    let jcp_url = env::var("JCP_URL").ok().unwrap_or(DEFAULT_JCP_URL.into());
+    let jcp_url = env::var(JCP_URL_ENV_NAME)
+        .ok()
+        .unwrap_or(DEFAULT_JCP_URL.into());
 
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
     runtime.block_on(async {
@@ -110,10 +113,14 @@ fn run_adapter(keychain: &dyn SecretBackend) {
                 adapter.run().await.expect("Unable to handle message");
             }
             Err(e) => {
-                // Report the initialization failure to the client as a JSON-RPC error
-                // Error reporting is happening via JSON RPC channel, we can not reply on IDE monitoring stderr
-                if let Ok(err) = create_json_rpc_error(&e, request_id) {
-                    let _ = client.send(err).await;
+                // Report the initialization failure back to the client
+                // Error reporting is happening via JSON RPC channel, we can not rely on IDE monitoring stderr,
+                // but for the sake of convenience we report error to both channels
+                match create_json_rpc_error(&e, request_id) {
+                    Ok(err) => {
+                        let _ = client.send(err).await.ok();
+                    }
+                    Err(e) => eprintln!("Unable to send JSON RPC error: {e}"),
                 }
                 panic!("{e}");
             }
@@ -124,7 +131,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 /// Authenticates and opens a WebSocket connection to the JCP uplink.
 ///
 /// Returns the connected [`WebSocketTransport`], and a resolved [`AccessTokens`] on success,
-/// or an error message string that can be forwarded to the client.
+/// or an error that MUST be forwarded to the client.
 ///
 /// After this method returned both transport considered ready and can be passed to an adapter
 async fn handshake_and_authenticate(
@@ -144,12 +151,18 @@ async fn handshake_and_authenticate(
 
     let mut request = jcp_url
         .into_client_request()
-        .map_err(to_io_invalid_data_err)?;
+        .map_err(|e| Error::InvalidUrl(jcp_url.to_string(), e))?;
     request.headers_mut().insert(
         "Authorization",
         format!("Bearer {}", tokens.jcp_access_token)
             .parse()
-            .map_err(to_io_invalid_data_err)?,
+            .map_err(|_| {
+                // Intentionally masking original error here, to prevent any possible secret leak
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Illegal token value. Only ASCII characters are allowed",
+                )
+            })?,
     );
 
     // Establishing WebSocket connection
@@ -165,8 +178,8 @@ async fn handshake_and_authenticate(
         io::ErrorKind::UnexpectedEof,
         "Agent reset connection",
     ))?;
-    // Forwarding InitializeResponse from an agent to a client. We're assuming this is reply to
-    // InitializationRequest, but it might be not a successful result, but a JSON RPC error, hence we do not
+    // Forwarding `InitializeResponse` from an agent to a client. We're assuming this is reply to
+    // `InitializeRequest`. It might be not a successful result, but a JSON RPC error, hence we do not
     // deserialize it here
     client
         .send(init_response)
@@ -177,11 +190,12 @@ async fn handshake_and_authenticate(
     Ok((agent, tokens))
 }
 
-/// Retrieves access tokens.
+/// Retrieves access tokens
 ///
-/// If both `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` are present, then they are used.
-/// If not, the refresh token is retrieved from the keychain and fresh access tokens are requested.
-/// `AI_PLATFORM_TOKEN` and `JCP_ACCESS_TOKEN` env variables still allow overriding respective tokens.
+/// If both env-variables with access tokens are present, then they are used (see [`AI_PLATFORM_TOKEN_ENV_NAME`],
+/// [`JCP_ACCESS_TOKEN_ENV_NAME`]). If not, the refresh token is retrieved
+/// from the keychain and fresh access tokens are requested.
+/// Env variables still allow overriding respective tokens.
 fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
     let jb_ai = env::var(AI_PLATFORM_TOKEN_ENV_NAME).ok();
     let jcp = env::var(JCP_ACCESS_TOKEN_ENV_NAME).ok();

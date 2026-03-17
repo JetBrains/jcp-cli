@@ -23,6 +23,9 @@ use tungstenite::{
 pub mod auth;
 pub mod keychain;
 
+/// The name of environment variable that defines the URL t JCP WS API
+pub const JCP_URL_ENV_NAME: &str = "JCP_URL";
+
 pub type AgentOutgoingMessage = OutgoingMessage<AgentSide, ClientSide>;
 pub type ClientOutgoingMessage = OutgoingMessage<ClientSide, AgentSide>;
 
@@ -262,9 +265,12 @@ pub struct Adapter {
 impl Adapter {
     /// Create a new adapter with the given configuration and transports.
     ///
+    /// - `client` (downlink): transport to the client (IDE)
+    /// - `agent` (uplin): transport to the server (JCP)
     /// - `git_tool`: reads git info from working copies on new session requests
-    /// - `downlink`: transport to the client (IDE)
-    /// - `uplink`: transport to the server (JCP)
+    ///
+    /// Both transport are assumed to be initialized. Meaning that `InitializingRequest`/`InitializingResponse`
+    /// already happened
     pub fn new(
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
@@ -466,6 +472,7 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
     }
 }
 
+/// Reads [`RequestId`] from a JSON RPC payload and returns if any
 pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
     match &json_rpc["id"] {
         JsonValue::Null => Some(RequestId::Null),
@@ -475,6 +482,7 @@ pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
     }
 }
 
+/// Reads [`RequestId`], method name and request itself from a JSON RPC request payload
 pub fn decode_acp_request<T: Side>(
     json_rpc: &JsonValue,
 ) -> Result<Option<(RequestId, String, T::InRequest)>, acp::Error> {
@@ -545,9 +553,7 @@ fn inject_new_session_meta(req: &mut NewSessionRequest, meta: &NewSessionMeta) -
     Ok(())
 }
 
-pub fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(
-    e: E,
-) -> io::Error {
+fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
@@ -564,6 +570,9 @@ pub enum Error {
 
     #[error("WebSocket failed: {0}")]
     WebSocket(#[from] tungstenite::Error),
+
+    #[error("Invalid URL: {1}, url: {0}")]
+    InvalidUrl(String, tungstenite::Error),
 
     #[error("Invalid ACP message: {0}")]
     InvalidAcpMessage(#[from] acp::Error),
