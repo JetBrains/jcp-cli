@@ -65,6 +65,8 @@ fn prompt_turn() {
         },
         n => panic!("Unexpected notification: {n:?}"),
     };
+
+    e2e.teardown();
 }
 
 #[test]
@@ -96,6 +98,7 @@ fn run_outside_git_directory() {
             );
         }
     }
+    e2e.teardown();
 }
 
 #[test]
@@ -120,6 +123,8 @@ fn run_without_login() {
         msg.contains("`jcp login`"),
         "Expecting message saying that user need to do `jcp login` first. Got: {msg}"
     );
+
+    e2e.teardown();
 }
 
 /// E2E test harness that manages mock server and jcp processes.
@@ -292,12 +297,10 @@ impl E2eHarness {
         };
         (response, notifications)
     }
-}
 
-impl Drop for E2eHarness {
-    fn drop(&mut self) {
+    fn teardown(mut self) {
         if let Some(server_join_handle) = self.server_handle.take() {
-            self.jcp.kill();
+            self.jcp.terminate();
             server_join_handle.join().ok();
         }
     }
@@ -329,50 +332,54 @@ fn serve_acp_client(listener: TcpListener) {
         let msg = match ws.read() {
             Ok(msg) => msg,
             // we have a separate server for each test, so stopping after serving first client,
-            Err(tungstenite::Error::ConnectionClosed) => return,
+            Err(tungstenite::Error::ConnectionClosed) => {
+                return;
+            }
             Err(e) => panic!("{e}"),
         };
 
-        let Message::Text(text) = msg else {
-            continue;
-        };
+        match msg {
+            Message::Text(text) => {
+                let raw: RawIncomingMessage<'_> = serde_json::from_str(&text).unwrap();
+                let Some((method, id)) = raw.method.zip(raw.id) else {
+                    continue;
+                };
 
-        let raw: RawIncomingMessage<'_> = serde_json::from_str(&text).unwrap();
-        let Some((method, id)) = raw.method.zip(raw.id) else {
-            continue;
-        };
-
-        let request = AgentSide::decode_request(method, raw.params).unwrap();
-        let response = match request {
-            ClientRequest::InitializeRequest(req) => {
-                AgentResponse::InitializeResponse(InitializeResponse::new(req.protocol_version))
+                let request = AgentSide::decode_request(method, raw.params).unwrap();
+                let response = match request {
+                    ClientRequest::InitializeRequest(req) => AgentResponse::InitializeResponse(
+                        InitializeResponse::new(req.protocol_version),
+                    ),
+                    ClientRequest::NewSessionRequest(_) => {
+                        AgentResponse::NewSessionResponse(NewSessionResponse::new(session_id))
+                    }
+                    ClientRequest::PromptRequest(r) => {
+                        if let Some(block) = r.prompt.first() {
+                            let update =
+                                SessionUpdate::AgentMessageChunk(ContentChunk::new(block.clone()));
+                            let notification = AgentNotification::SessionNotification(
+                                SessionNotification::new(session_id, update),
+                            );
+                            send_jrpc(
+                                &mut ws,
+                                AgentOutgoingMessage::Notification(Notification {
+                                    method: notification.method().into(),
+                                    params: Some(notification),
+                                }),
+                            );
+                        }
+                        AgentResponse::PromptResponse(PromptResponse::new(StopReason::EndTurn))
+                    }
+                    _ => continue,
+                };
+                send_jrpc(
+                    &mut ws,
+                    AgentOutgoingMessage::Response(Response::new(id, Ok(response))),
+                );
             }
-            ClientRequest::NewSessionRequest(_) => {
-                AgentResponse::NewSessionResponse(NewSessionResponse::new(session_id))
-            }
-            ClientRequest::PromptRequest(r) => {
-                if let Some(block) = r.prompt.first() {
-                    let update = SessionUpdate::AgentMessageChunk(ContentChunk::new(block.clone()));
-                    let notification = AgentNotification::SessionNotification(
-                        SessionNotification::new(session_id, update),
-                    );
-                    send_jrpc(
-                        &mut ws,
-                        AgentOutgoingMessage::Notification(Notification {
-                            method: notification.method().into(),
-                            params: Some(notification),
-                        }),
-                    );
-                }
-                AgentResponse::PromptResponse(PromptResponse::new(StopReason::EndTurn))
-            }
+            Message::Close(_) => break,
             _ => continue,
-        };
-
-        send_jrpc(
-            &mut ws,
-            AgentOutgoingMessage::Response(Response::new(id, Ok(response))),
-        );
+        }
     }
 }
 
@@ -398,15 +405,13 @@ impl ChildProcess {
         line
     }
 
-    fn kill(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
-    }
-}
-
-impl Drop for ChildProcess {
-    fn drop(&mut self) {
-        self.kill();
+    fn terminate(self) {
+        let Self {
+            mut child, stdin, ..
+        } = self;
+        // After closing stdin, adapter should exit gracefully
+        drop(stdin);
+        child.wait().ok();
     }
 }
 

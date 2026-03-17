@@ -2,7 +2,6 @@ use acp::{AgentSide, ClientRequest, ErrorCode, RequestId};
 use agent_client_protocol as acp;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
-use futures_util::StreamExt;
 use jcp::{
     Adapter, GitCommandTool, IoTransport, JCP_URL_ENV_NAME, TrafficLog, Transport,
     WebSocketTransport,
@@ -83,6 +82,8 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 
         let mut client = IoTransport::new(stdin(), stdout());
 
+        let ctrl_c = tokio::signal::ctrl_c();
+
         // This code is rather tricky.
         //
         // We generally are not interested in client transport errors, because if client transport failed
@@ -112,7 +113,12 @@ fn run_adapter(keychain: &dyn SecretBackend) {
                     Ok(log) => adapter.set_traffic_log(log),
                     Err(e) => eprintln!("Unable to create traffic log: {e}"),
                 }
-                adapter.run().await.expect("Unable to handle message");
+
+                tokio::select! {
+                    r = adapter.run() => r.expect("Unable to handle message"),
+                    _ = ctrl_c => {  }
+                };
+                let _ = adapter.shutdown().await;
             }
             Err(e) => {
                 // Report the initialization failure back to the client
@@ -169,9 +175,7 @@ async fn handshake_and_authenticate(
 
     // Establishing WebSocket connection
     let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
-    let (ws_tx, ws_rx) = ws_stream.split();
-
-    let mut agent = WebSocketTransport::new(ws_rx, ws_tx);
+    let mut agent = WebSocketTransport::new(ws_stream);
 
     // Forward InitializeRequest to the uplink server
     agent.send(initialize_request).await?;

@@ -5,7 +5,7 @@ use agent_client_protocol::{
     SessionUpdate, Side, StopReason, TextContent,
 };
 use async_trait::async_trait;
-use futures::{FutureExt, Sink, Stream};
+use futures::FutureExt;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -13,7 +13,9 @@ use std::{collections::HashMap, io, path::Path, process::Command};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines},
+    net::TcpStream,
 };
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tungstenite::{
     Message, Utf8Bytes,
     protocol::{CloseFrame, frame::coding::CloseCode},
@@ -42,6 +44,8 @@ pub trait Transport {
 
     /// Send a message through the transport.
     async fn send(&mut self, msg: JsonValue) -> io::Result<()>;
+
+    async fn close(self: Box<Self>) -> io::Result<()>;
 }
 
 /// Transport implementation for arbitrary async readers/writers.
@@ -84,23 +88,20 @@ impl Transport for IoTransport {
         self.writer.write_all(b"\n").await?;
         self.writer.flush().await
     }
+
+    async fn close(self: Box<Self>) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Transport implementation for WebSocket connections.
 pub struct WebSocketTransport {
-    rx: Box<dyn Stream<Item = Result<Message, tungstenite::Error>> + Unpin + Send>,
-    tx: Box<dyn Sink<Message, Error = tungstenite::Error> + Unpin + Send>,
+    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
 impl WebSocketTransport {
-    pub fn new(
-        rx: impl Stream<Item = Result<Message, tungstenite::Error>> + Unpin + Send + 'static,
-        tx: impl Sink<Message, Error = tungstenite::Error> + Unpin + Send + 'static,
-    ) -> Self {
-        Self {
-            rx: Box::new(rx),
-            tx: Box::new(tx),
-        }
+    pub fn new(ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+        Self { ws }
     }
 }
 
@@ -108,7 +109,7 @@ impl WebSocketTransport {
 impl Transport for WebSocketTransport {
     async fn recv(&mut self) -> io::Result<Option<JsonValue>> {
         loop {
-            match self.rx.next().await {
+            match self.ws.next().await {
                 Some(Ok(msg)) => match msg {
                     Message::Text(text) => {
                         return serde_json::from_str(&text)
@@ -120,7 +121,7 @@ impl Transport for WebSocketTransport {
                         continue;
                     }
                     Message::Ping(bytes) => {
-                        self.tx
+                        self.ws
                             .send(Message::Pong(bytes))
                             .await
                             .map_err(io::Error::other)?;
@@ -129,7 +130,7 @@ impl Transport for WebSocketTransport {
                     Message::Pong(_) => continue,
                     Message::Close(close_frame) => {
                         // Replying with the close frame
-                        let _ = self.tx.send(Message::Close(None)).await;
+                        let _ = self.ws.send(Message::Close(None)).await;
                         return match close_frame {
                             Some(CloseFrame {
                                 code: CloseCode::Normal,
@@ -157,7 +158,18 @@ impl Transport for WebSocketTransport {
             .map_err(to_io_invalid_data_err)
             .map(Utf8Bytes::from)
             .map(Message::Text)?;
-        self.tx.send(message).await.map_err(io::Error::other)
+        self.ws.send(message).await.map_err(io::Error::other)
+    }
+
+    async fn close(mut self: Box<Self>) -> io::Result<()> {
+        let close_frame = CloseFrame {
+            code: CloseCode::Away,
+            reason: Utf8Bytes::default(),
+        };
+        self.ws
+            .close(Some(close_frame))
+            .await
+            .map_err(to_io_invalid_data_err)
     }
 }
 
@@ -327,14 +339,7 @@ impl Adapter {
         // If one of the transports reported EOF, we still need to process another one
         match result {
             MessageProcessed => Ok(true),
-            ClientTerminated => {
-                if let Some(msg) = self.agent.recv().await? {
-                    self.handle_agent_message(msg).await?;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
+            ClientTerminated => Ok(false),
             AgentTerminated => {
                 if let Some(msg) = self.client.recv().await? {
                     self.handle_client_message(msg).await?;
@@ -452,6 +457,16 @@ impl Adapter {
     pub async fn run(&mut self) -> io::Result<()> {
         while self.handle_next_message().await? {}
         Ok(())
+    }
+
+    pub async fn shutdown(self) -> io::Result<()> {
+        let (agent_result, client_result) = tokio::join!(self.agent.close(), self.client.close());
+        // Return encointered error if any
+        if agent_result.is_err() {
+            agent_result
+        } else {
+            client_result
+        }
     }
 }
 

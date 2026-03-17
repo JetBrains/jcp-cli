@@ -214,6 +214,10 @@ impl Transport for ChannelTransport {
     async fn send(&mut self, msg: JsonValue) -> io::Result<()> {
         self.tx.send(msg).await.map_err(io::Error::other)
     }
+
+    async fn close(self: Box<Self>) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// This is a simple wrapper around json value that simplifies tests by
