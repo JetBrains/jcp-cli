@@ -22,7 +22,7 @@ use tungstenite::{
 pub mod auth;
 pub mod keychain;
 
-/// The name of environment variable that defines the URL t JCP WS API
+/// The name of the environment variable that defines the URL to the JCP WS API
 pub const JCP_URL_ENV_NAME: &str = "JCP_URL";
 
 pub type AgentOutgoingMessage = OutgoingMessage<AgentSide, ClientSide>;
@@ -37,7 +37,7 @@ pub trait Transport {
     /// Receive the next message from the transport.
     /// Returns `Ok(None)` when the transport is closed.
     ///
-    /// All implementations need to by cancel safe
+    /// All implementations need to be cancel-safe
     async fn recv(&mut self) -> io::Result<Option<JsonValue>>;
 
     /// Send a message through the transport.
@@ -268,8 +268,8 @@ impl Adapter {
     /// - `agent` (uplink): transport to the server (JCP)
     /// - `git_tool`: reads git info from working copies on new session requests
     ///
-    /// Both transports are assumed to be initialized. Meaning that `InitializeRequest`/`InitializeResponse`
-    /// already processed by agent and client respectively
+    /// Both transports are assumed to be initialized, meaning that `InitializeRequest`/`InitializeResponse`
+    /// have already been processed by the agent and client respectively
     pub fn new(
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
@@ -292,7 +292,7 @@ impl Adapter {
 
     /// Process the next message from either the client or server channel.
     ///
-    /// Returns `true` if there are more messages can be handled
+    /// Returns `true` if there are more messages that can be handled
     /// Returns `false` when both channels are closed (end of communication).
     pub async fn handle_next_message(&mut self) -> io::Result<bool> {
         use Status::*;
@@ -485,7 +485,7 @@ pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
 pub fn decode_acp_request<T: Side>(
     json_rpc: &JsonValue,
 ) -> Result<Option<(RequestId, String, T::InRequest)>, acp::Error> {
-    // This is ugly hack, but we need to serialize here back to string, otherwise
+    // This is an ugly hack, but we need to serialize here back to string, otherwise
     // we can not use AgentSide::decode_request()
     let msg_str = json_rpc.to_string();
     // SAFETY: unwrap() is safe here, because we're serialized proper json on a previous line

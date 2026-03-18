@@ -113,7 +113,7 @@ pub fn login() -> Result<String, AuthError> {
 /// 1. Uses the JCP refresh token to get a fresh JCP access token and ID token
 /// 2. Fetches organization info from JCP
 /// 3. Switches the token audience to get a JCP-scoped token
-/// 4. reads the first AI license from JB AI platform and retrieves JB AI token
+/// 4. Reads the first AI license from JB AI platform and retrieves JB AI token
 ///
 /// Use this with a refresh token obtained from [`login()`].
 pub fn get_access_tokens(refresh_token: &str) -> Result<AccessTokens, AuthError> {
@@ -181,7 +181,7 @@ fn get_org_info(http_client: &Client, access_token: &str) -> Result<OrgInfo, Aut
     // Parse JWT to extract organization ID
     let token: Token<Value, JcpTokenClaims, _> = Token::parse_unverified(&raw_token)?;
 
-    // There is no UI yet, so we just choosing first organisation
+    // There is no UI yet, so we are just choosing the first organisation
     let organization = token
         .claims()
         .orgs
@@ -217,7 +217,7 @@ fn retrieve_ai_access_token(
         .map_err(AuthError::License)?
         .json::<UserAssets>()?
         .find_matched_licenses()
-        // No UI yet, so just choosing first License
+        // No UI yet, so just choosing the first license
         .next()
         .map(|l| l.license_id.clone())
         .ok_or(AuthError::NoValidAiLicenseFound)?;

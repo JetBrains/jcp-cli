@@ -1,12 +1,12 @@
 //! Integrations tests.
 //!
 //! Although Adapter uses tokio runtime to drive both transports (uplink/downlink) concurrently,
-//! we intentionally use std `#[test]` here instead of `#[tokio:test]`. Adapter is designed to be tested
+//! we intentionally use std `#[test]` here instead of `#[tokio::test]`. Adapter is designed to be tested
 //! in synchronous manner without awaiting (see. [`TestHarness`] docs).
 //!
-//! It means that we can not do `.awaits` in tests, which is intentional. Also some adidtional
+//! It means that we can not do `.awaits` in tests, which is intentional. Also some additional
 //! tokio facilities which requires Tokio runtime to be present might be unavailable (like [`tokio::time::sleep()`]).
-//! If this is the case, it is possible to use `#[tokio:test]`, but additional caution needs to be taken
+//! If this is the case, it is possible to use `#[tokio::test]`, but additional caution needs to be taken
 //! to keep tests fast and reliable.
 
 use agent_client_protocol::{

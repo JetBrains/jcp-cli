@@ -239,7 +239,7 @@ pub enum Error {
     InvalidAcpMessage(#[from] acp::Error),
 }
 
-/// Creates a new JSON RPC error replyfor a given request id
+/// Creates a new JSON RPC error reply for a given request id
 fn create_json_rpc_error(
     error: &Error,
     original_request_id: RequestId,

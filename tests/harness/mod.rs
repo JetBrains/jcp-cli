@@ -38,9 +38,9 @@ impl GitTool for StubGitTool {
 /// - [`TestHarness::client_recv()`]/[`TestHarness::client_send()`]
 /// - [`TestHarness::agent_recv()`]/[`TestHarness::agent_reply()`]
 ///
-/// Each method is send a JSON RPC message to the Adapter and makes sure that message is delivered
+/// Each method sends a JSON RPC message to the Adapter and makes sure that message is delivered
 /// to the counterparty. For example, when [`TestHarness::client_send()`] successfully returns
-/// it means that the message or it's derivatives (because Adapter can change/generate new messages)
+/// it means that the message or its derivatives (because Adapter can change/generate new messages)
 /// are available for reading using [`TestHarness::agent_recv()`].
 pub struct TestHarness {
     /// The adapter instance
@@ -54,7 +54,7 @@ pub struct TestHarness {
     next_session_id: u32,
 }
 
-/// Making sure future completes immedateley on a first poll.
+/// Makes sure a future completes immediately on the first poll.
 /// It is appropriate in the test context, because we use local mpsc-channels
 macro_rules! now_or_panic {
     ($e:expr) => {
@@ -169,10 +169,10 @@ impl TestHarness {
         self.client.try_recv().map(JRpcMessage)
     }
 
-    /// Process the all enqueued messages in the adapter.
+    /// Process all enqueued messages in the adapter.
     ///
     /// After this method was called it is safe to assume that all requests were sent to their
-    /// conterparties
+    /// counterparties
     fn deliver_transport_messages(&mut self) {
         now_or_panic!(self.adapter.handle_enqueued_messages()).unwrap()
     }
@@ -216,8 +216,8 @@ impl Transport for ChannelTransport {
     }
 }
 
-/// This is a simple wrapper around json value that simplifies tests by
-/// providing typical conversion and expectaction method for JSON RPC messages.
+/// This is a simple wrapper around a JSON value that simplifies tests by
+/// providing typical conversion and expectation methods for JSON RPC messages.
 pub struct JRpcMessage(pub JsonValue);
 
 impl JRpcMessage {
