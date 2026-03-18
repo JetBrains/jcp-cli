@@ -332,9 +332,7 @@ fn serve_acp_client(listener: TcpListener) {
         let msg = match ws.read() {
             Ok(msg) => msg,
             // we have a separate server for each test, so stopping after serving first client,
-            Err(tungstenite::Error::ConnectionClosed) => {
-                return;
-            }
+            Err(tungstenite::Error::ConnectionClosed) => break,
             Err(e) => panic!("{e}"),
         };
 

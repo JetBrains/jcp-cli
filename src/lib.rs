@@ -45,6 +45,12 @@ pub trait Transport {
     /// Send a message through the transport.
     async fn send(&mut self, msg: JsonValue) -> io::Result<()>;
 
+    /// Closes transport gracefully, flushing all pending outgoing messages.
+    ///
+    /// NOTE: because it's not possible to automatically read all messages and close the Transport,
+    /// some pending incoming messages might be dropped on close. In order to fix it
+    /// this method should return `io::Result<Vec<JsonValue>>`. But at the moment
+    /// shutdown contract is such that we can not do anything with those messages anyway.
     async fn close(self: Box<Self>) -> io::Result<()>;
 }
 
@@ -90,6 +96,7 @@ impl Transport for IoTransport {
     }
 
     async fn close(self: Box<Self>) -> io::Result<()> {
+        // We do flush on send, hence nothing to do
         Ok(())
     }
 }
@@ -169,7 +176,8 @@ impl Transport for WebSocketTransport {
         self.ws
             .close(Some(close_frame))
             .await
-            .map_err(to_io_invalid_data_err)
+            .map_err(to_io_invalid_data_err)?;
+        self.ws.flush().await.map_err(to_io_invalid_data_err)
     }
 }
 
