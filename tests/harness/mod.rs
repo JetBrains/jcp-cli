@@ -174,7 +174,7 @@ impl TestHarness {
     /// After this method was called it is safe to assume that all requests were sent to their
     /// conterparties
     fn deliver_transport_messages(&mut self) {
-        now_or_panic!(self.adapter.handle_enqueued_messages()).unwrap()
+        now_or_panic!(self.adapter.handle_enqueued_messages()).unwrap();
     }
 }
 
