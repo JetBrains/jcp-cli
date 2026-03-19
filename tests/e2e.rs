@@ -122,13 +122,75 @@ fn run_without_login() {
     );
 }
 
-/// E2E test harness that manages mock server and jcp processes.
+/// E2E test harness that manages a mock ACP server and a `jcp acp` child process.
 ///
-/// Starts an in-process mock ACP server on a background task
-/// and spawns `jcp acp`, providing a typed API for sending client
-/// requests and receiving responses.
+/// # Overview
 ///
-/// Needs to be shut down using [`Self::shutdown()`].
+/// `E2eHarness` wires together two components for integration testing:
+///
+/// 1. **Mock ACP server** — a single-client WebSocket server running on a
+///    background thread. It speaks the ACP protocol and echoes prompt content
+///    back as notifications (see [`serve_acp_client`]).
+/// 2. **`jcp acp` process** — the binary under test, spawned as a child process
+///    with stdin/stdout piped so the harness can exchange JSON-RPC messages
+///    with it.
+///
+/// # Usage
+///
+/// ## Basic test flow
+///
+/// ```rust,ignore
+/// let mut e2e = E2eHarness::bootstrap(Default::default());
+///
+/// // 1. Handshake
+/// e2e.initialize_check().unwrap();
+///
+/// // 2. Create a session
+/// let session = e2e.new_session_check().unwrap();
+///
+/// // 3. Send a prompt and inspect the response + notifications
+/// let prompt = ContentBlock::Text(TextContent::new("Hello"));
+/// let req = PromptRequest::new(session.session_id, vec![prompt]);
+/// let (response, notifications) =
+///     e2e.client_request::<PromptResponse>(ClientRequest::PromptRequest(req));
+/// ```
+///
+/// ## Customizing the test environment
+///
+/// Pass an [`E2eConfig`] to [`E2eHarness::bootstrap`] to adjust behavior:
+///
+/// - **`project_dir`** — override the working directory of the spawned process
+///   (e.g. a temp dir without a git repo).
+/// - **`suppress_stderr`** — send child stderr to `/dev/null`; useful when the
+///   test scenario intentionally triggers warnings or errors.
+/// - **`start_server`** — set to `false` to skip starting the mock server,
+///   for tests that only exercise local behavior (e.g. missing credentials).
+/// - **`keychain_file`** — point to a custom (or non-existent) keychain file.
+/// - **`explicit_access_tokens`** — provide (or omit) access tokens via env
+///   vars. Set to `None` together with `start_server: false` to simulate a
+///   logged-out state.
+///
+/// ```rust,ignore
+/// let mut e2e = E2eHarness::bootstrap(E2eConfig {
+///     project_dir: Some(tmp_dir.path().to_path_buf()),
+///     suppress_stderr: true,
+///     ..Default::default()
+/// });
+/// ```
+///
+/// ## Key methods
+///
+/// | Method                | Purpose |
+/// |-----------------------|---------|
+/// | [`bootstrap`](Self::bootstrap)           | Create the harness (server + child process). |
+/// | [`initialize_check`](Self::initialize_check)    | Send `InitializeRequest` and assert the protocol version. |
+/// | [`new_session_check`](Self::new_session_check)   | Send `NewSessionRequest` and assert a non-empty session id. |
+/// | [`client_request`](Self::client_request)      | Send an arbitrary [`ClientRequest`] and collect the typed response together with any [`AgentNotification`]s emitted before the response. |
+///
+/// # Cleanup
+///
+/// `E2eHarness` implements [`Drop`]: it kills the child process and joins the
+/// server thread automatically when the harness goes out of scope.
 struct E2eHarness {
     jcp: ChildProcess,
     next_request_id: i64,
