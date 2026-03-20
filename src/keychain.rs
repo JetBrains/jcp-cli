@@ -281,9 +281,9 @@ mod macos {
 /// configured for a keychain item and how the binary is signed.
 ///
 /// If you'll find a way to disable this behaviour on macOS, please remove [`FileBackend`]. There is no
-/// other reasosns to use it.
+/// other reason to use it.
 ///
-/// This module is intentonally marked as `cfg(debug_assertions)` in order to guarantee that it will
+/// This module is intentionally marked as `cfg(debug_assertions)` in order to guarantee that it will
 /// never be published and unintentionally used to store secrets in the production context.
 #[cfg(debug_assertions)]
 pub mod file {
@@ -313,7 +313,7 @@ pub mod file {
                 PathBuf::from(config_path)
             } else {
                 dirs::config_dir()
-                    .expect("Unable to red config dir")
+                    .expect("Unable to read config dir")
                     .join(APP_NAME)
                     .join(CONFIG_FILE_NAME)
             };
