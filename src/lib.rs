@@ -448,12 +448,8 @@ impl Adapter {
 
     pub async fn shutdown(self) -> io::Result<()> {
         let (agent_result, client_result) = tokio::join!(self.agent.close(), self.client.close());
-        // Return encointered error if any
-        if agent_result.is_err() {
-            agent_result
-        } else {
-            client_result
-        }
+        // Return encountered error if any
+        client_result.and(agent_result)
     }
 
     /// Closing adapter and returning client and agent transports respectively without closing them
