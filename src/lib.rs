@@ -308,7 +308,7 @@ impl Adapter {
 
     /// Sets AI Platform developer token
     ///
-    /// AI Platform token is issued by Agent Spawner automatically, but for development purposes might be overriden
+    /// AI Platform token is issued by Agent Spawner automatically, but for development purposes might be overridden
     pub fn set_ai_platform_token(&mut self, token: Option<String>) {
         self.ai_platform_token = token;
     }
