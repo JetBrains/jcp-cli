@@ -14,7 +14,7 @@ pub const AI_PLATFORM_TOKEN_ENV_NAME: &str = "AI_PLATFORM_TOKEN";
 pub const JCP_ACCESS_TOKEN_ENV_NAME: &str = "JCP_ACCESS_TOKEN";
 
 /// A backend for storing and retrieving secrets.
-pub trait SecretBackend {
+pub trait SecretBackend: Send {
     fn store_refresh_token(&self, token: &str) -> io::Result<()> {
         self.write_secret(REFRESH_TOKEN_KEY, token)
     }

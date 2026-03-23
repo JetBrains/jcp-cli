@@ -65,7 +65,7 @@ macro_rules! now_or_panic {
 
 impl TestHarness {
     /// Bootstrap a new test harness with the given config and git tool stub.
-    pub fn new(ai_token: &str, git_tool: impl GitTool + 'static) -> Self {
+    pub fn new(git_tool: impl GitTool + 'static) -> Self {
         let (downlink_adapter, downlink_test) = ChannelTransport::pair(10);
         let (uplink_adapter, uplink_test) = ChannelTransport::pair(10);
 
@@ -73,7 +73,6 @@ impl TestHarness {
             Box::new(downlink_adapter),
             Box::new(uplink_adapter),
             Box::new(git_tool),
-            ai_token.to_string(),
         );
 
         Self {

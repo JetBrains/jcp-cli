@@ -23,7 +23,6 @@ mod harness;
 const TEST_GIT_URL: &str = "https://github.com/test/repo.git";
 const TEST_BRANCH: &str = "main";
 const TEST_REVISION: &str = "abc123";
-const TEST_TOKEN: &str = "test-token";
 
 #[test]
 fn test_adapter_injects_meta_into_new_session_request() {
@@ -34,10 +33,10 @@ fn test_adapter_injects_meta_into_new_session_request() {
     };
     let expected_meta = NewSessionMeta {
         remote: remote_info.clone(),
-        ai_platform_token: TEST_TOKEN.into(),
+        ai_platform_token: None,
     };
     let git_tool = StubGitTool(remote_info);
-    let mut harness = TestHarness::new(TEST_TOKEN, git_tool);
+    let mut harness = TestHarness::new(git_tool);
 
     // Client sends newSession request (without meta)
     let request_id = harness.client_send(ClientRequest::NewSessionRequest(NewSessionRequest::new(
@@ -129,5 +128,5 @@ fn test_harness() -> TestHarness {
         branch: TEST_BRANCH.into(),
         revision: TEST_REVISION.into(),
     });
-    TestHarness::new(TEST_TOKEN, git_tool)
+    TestHarness::new(git_tool)
 }

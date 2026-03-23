@@ -162,7 +162,7 @@ impl Default for E2eConfig {
             start_server: true,
             explicit_access_tokens: Some(AccessTokens {
                 jcp_access_token: "test-token".into(),
-                ai_access_token: "test-access-token".into(),
+                ai_access_token: None,
             }),
         }
     }
@@ -192,8 +192,10 @@ impl E2eHarness {
             cmd.env(KEYCHAIN_FILE_ENV_NAME, keychain_file.to_str().unwrap());
         }
         if let Some(access_tokens) = config.explicit_access_tokens {
-            cmd.env(AI_PLATFORM_TOKEN_ENV_NAME, access_tokens.ai_access_token)
-                .env(JCP_ACCESS_TOKEN_ENV_NAME, access_tokens.jcp_access_token);
+            cmd.env(JCP_ACCESS_TOKEN_ENV_NAME, access_tokens.jcp_access_token);
+            if let Some(ai_token) = access_tokens.ai_access_token {
+                cmd.env(AI_PLATFORM_TOKEN_ENV_NAME, ai_token);
+            }
         }
 
         if let Some(project_dir) = config.project_dir {

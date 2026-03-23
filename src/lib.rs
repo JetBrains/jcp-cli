@@ -218,7 +218,8 @@ pub struct NewSessionMeta {
     pub remote: GitRemoteInfo,
 
     #[serde(rename = "jbAiToken")]
-    pub ai_platform_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_platform_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -272,7 +273,7 @@ pub struct Adapter {
     git_tool: Box<dyn GitTool>,
     client: Box<dyn Transport>,
     agent: Box<dyn Transport>,
-    ai_platform_token: String,
+    ai_platform_token: Option<String>,
     traffic_log: TrafficLog,
 
     /// Mapping from prompt request id to session id
@@ -294,16 +295,22 @@ impl Adapter {
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
         git_tool: Box<dyn GitTool>,
-        ai_platform_token: String,
     ) -> Self {
         Self {
-            ai_platform_token,
             client,
             agent,
             git_tool,
             traffic_log: TrafficLog::default(),
             prompt_request_mapping: HashMap::new(),
+            ai_platform_token: None,
         }
+    }
+
+    /// Sets AI Platform developer token
+    ///
+    /// AI Platform token is issued by Agent Spawner automatically, but for development purposes might be overriden
+    pub fn set_ai_platform_token(&mut self, token: Option<String>) {
+        self.ai_platform_token = token;
     }
 
     pub fn set_traffic_log(&mut self, traffic_log: TrafficLog) {
@@ -588,7 +595,25 @@ mod tests {
                     url: "https://example.com/repo.git".to_string(),
                     revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
                 },
-                ai_platform_token: "test_token".to_string(),
+                ai_platform_token: Some("test_token".to_string()),
+            },
+        );
+
+        check_serialization(
+            json!({
+                "remote": {
+                    "branch": "main",
+                    "url": "https://example.com/repo.git",
+                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
+                },
+            }),
+            NewSessionMeta {
+                remote: GitRemoteInfo {
+                    branch: "main".to_string(),
+                    url: "https://example.com/repo.git".to_string(),
+                    revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
+                },
+                ai_platform_token: None,
             },
         );
     }
@@ -710,12 +735,7 @@ mod tests {
             )
         };
 
-        let mut adapter = Adapter::new(
-            Box::new(client),
-            Box::new(agent),
-            Box::new(NullGitTool),
-            "unused".to_string(),
-        );
+        let mut adapter = Adapter::new(Box::new(client), Box::new(agent), Box::new(NullGitTool));
 
         let mut i = 0;
         while adapter.handle_next_message().await.unwrap() {

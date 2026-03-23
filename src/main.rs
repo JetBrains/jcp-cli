@@ -5,7 +5,7 @@ use dotenv::dotenv;
 use jcp::{
     Adapter, GitCommandTool, IoTransport, JCP_URL_ENV_NAME, TrafficLog, Transport,
     WebSocketTransport,
-    auth::{self, AccessTokens, get_access_tokens, login},
+    auth::{self, AccessTokens, get_access_token, login},
     decode_acp_request,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
     request_id,
@@ -13,8 +13,11 @@ use jcp::{
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
 use thiserror::Error;
-use tokio::io::{stdin, stdout};
-use tokio::runtime::Runtime;
+use tokio::{
+    io::{stdin, stdout},
+    runtime::Runtime,
+    task::{JoinError, spawn_blocking},
+};
 use tungstenite::client::IntoClientRequest;
 
 const DEFAULT_JCP_URL: &str = "wss://api.stgn.jetbrains.cloud/agent-spawner/acp";
@@ -67,11 +70,11 @@ fn main() {
             keychain.delete_refresh_token().unwrap();
             eprintln!("Logout successful!");
         }
-        Commands::Acp => run_adapter(&*keychain),
+        Commands::Acp => run_adapter(keychain),
     }
 }
 
-fn run_adapter(keychain: &dyn SecretBackend) {
+fn run_adapter(keychain: Box<dyn SecretBackend>) {
     let jcp_url = env::var(JCP_URL_ENV_NAME)
         .ok()
         .unwrap_or(DEFAULT_JCP_URL.into());
@@ -103,12 +106,9 @@ fn run_adapter(keychain: &dyn SecretBackend) {
         match handshake_and_authenticate(&mut client, init_msg, keychain, &jcp_url).await {
             Ok((uplink, tokens)) => {
                 // Run the adapter for the remainder of the session
-                let mut adapter = Adapter::new(
-                    Box::new(client),
-                    Box::new(uplink),
-                    Box::new(GitCommandTool),
-                    tokens.ai_access_token,
-                );
+                let mut adapter =
+                    Adapter::new(Box::new(client), Box::new(uplink), Box::new(GitCommandTool));
+                adapter.set_ai_platform_token(tokens.ai_access_token);
                 match traffic_log {
                     Ok(log) => adapter.set_traffic_log(log),
                     Err(e) => eprintln!("Unable to create traffic log: {e}"),
@@ -145,7 +145,7 @@ fn run_adapter(keychain: &dyn SecretBackend) {
 async fn handshake_and_authenticate(
     client: &mut dyn Transport,
     initialize_request: JsonValue,
-    keychain: &dyn SecretBackend,
+    keychain: Box<dyn SecretBackend>,
     jcp_url: &str,
 ) -> Result<(WebSocketTransport, AccessTokens), Error> {
     // Checking that this is indeed InitializeRequest
@@ -155,7 +155,9 @@ async fn handshake_and_authenticate(
         return Err(io::Error::other("InitializeRequest expected").into());
     };
 
-    let tokens = authenticate(keychain)?;
+    // We can not call authenticate() synchronously here, because blocking reqwest implementation is
+    // using tokio under the hood.
+    let tokens = spawn_blocking(move || authenticate(&*keychain)).await??;
 
     let mut request = jcp_url
         .into_client_request()
@@ -206,20 +208,16 @@ fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
     let jb_ai = env::var(AI_PLATFORM_TOKEN_ENV_NAME).ok();
     let jcp = env::var(JCP_ACCESS_TOKEN_ENV_NAME).ok();
 
-    let access_tokens = if let Some((jb_ai_token, jcp_token)) = jb_ai.as_ref().zip(jcp.as_ref()) {
-        AccessTokens {
-            jcp_access_token: jcp_token.to_string(),
-            ai_access_token: jb_ai_token.to_string(),
-        }
+    let jcp_access_token = if let Some(jcp_token) = jcp {
+        jcp_token
     } else {
         let refresh_token = keychain.get_refresh_token()?.ok_or(Error::NoRefreshToken)?;
-        let access_tokens = get_access_tokens(&refresh_token)?;
-        AccessTokens {
-            jcp_access_token: jcp.unwrap_or(access_tokens.jcp_access_token),
-            ai_access_token: jb_ai.unwrap_or(access_tokens.ai_access_token),
-        }
+        get_access_token(&refresh_token)?
     };
-    Ok(access_tokens)
+    Ok(AccessTokens {
+        jcp_access_token,
+        ai_access_token: jb_ai,
+    })
 }
 
 #[derive(Error, Debug)]
@@ -235,6 +233,9 @@ pub enum Error {
 
     #[error("WebSocket failed: {0}")]
     WebSocket(#[from] tungstenite::Error),
+
+    #[error("Failed to join on tokio task: {0}")]
+    TokioJoinError(#[from] JoinError),
 
     #[error("Invalid URL: {1}, url: {0}")]
     InvalidUrl(String, tungstenite::Error),
