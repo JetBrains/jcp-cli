@@ -144,9 +144,9 @@ struct E2eHarness {
 struct E2eConfig {
     project_dir: Option<PathBuf>,
     /// If true, stderr of jcp binary will be sent to /dev/null
-    /// Set it if test scenario expects to generate errors/warning is jcp binary
+    /// Set it if test scenario expects to generate errors/warning in jcp binary
     suppress_stderr: bool,
-    /// Whether we need to start an ACP server. Some tests that checks fully local beheviour
+    /// Whether we need to start an ACP server. Some tests that checks fully local behaviour
     /// do not have to start server at all
     start_server: bool,
     keychain_file: Option<PathBuf>,

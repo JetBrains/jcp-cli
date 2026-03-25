@@ -1,4 +1,4 @@
-//! Integrations tests.
+//! Integration tests.
 //!
 //! Although Adapter uses tokio runtime to drive both transports (uplink/downlink) concurrently,
 //! we intentionally use std `#[test]` here instead of `#[tokio::test]`. Adapter is designed to be tested
