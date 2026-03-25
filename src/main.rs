@@ -122,7 +122,7 @@ fn run_adapter(keychain: Box<dyn SecretBackend>) {
             }
             Err(e) => {
                 // Report the initialization failure back to the client
-                // Error reporting is happening via JSON RPC channel, we can not rely on IDE monitoring stderr,
+                // Error reporting is happening via JSON RPC channel, we can't rely on IDE monitoring stderr,
                 // but for the sake of convenience we report error to both channels
                 match create_json_rpc_error(&e, request_id) {
                     Ok(err) => {
@@ -155,7 +155,7 @@ async fn handshake_and_authenticate(
         return Err(io::Error::other("InitializeRequest expected").into());
     };
 
-    // We can not call authenticate() synchronously here, because blocking reqwest implementation is
+    // We can't call `authenticate()` synchronously here, because blocking reqwest implementation is
     // using tokio under the hood.
     let tokens = spawn_blocking(move || authenticate(&*keychain)).await??;
 

@@ -50,7 +50,7 @@ pub trait Transport {
     /// NOTE: because it's not possible to automatically read all messages and close the Transport,
     /// some pending incoming messages might be dropped on close. In order to fix it
     /// this method should return `io::Result<Vec<JsonValue>>`. But at the moment
-    /// shutdown contract is such that we can not do anything with those messages anyway.
+    /// shutdown contract is such that we can't do anything with those messages anyway.
     async fn close(self: Box<Self>) -> io::Result<()>;
 }
 
@@ -241,7 +241,7 @@ pub struct GitRemoteInfo {
 }
 
 /// Because ACP is a duplex protocol (requests can be initiated not only by a client, but also by a server)
-/// we can not use standard JSON RPC crates for working with transport messages. Those crates assumes that
+/// we can't use standard JSON RPC crates for working with transport messages. Those crates assumes that
 /// each party know what is expected (request/notification, response, error) when reading next message
 /// from a transport.
 ///
@@ -497,7 +497,7 @@ pub fn decode_acp_request<T: Side>(
     json_rpc: &JsonValue,
 ) -> Result<Option<(RequestId, String, T::InRequest)>, acp::Error> {
     // This is an ugly hack, but we need to serialize here back to string, otherwise
-    // we can not use AgentSide::decode_request()
+    // we can't use AgentSide::decode_request()
     let msg_str = json_rpc.to_string();
     // SAFETY: unwrap() is safe here, because we're serialized proper json on a previous line
     let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
