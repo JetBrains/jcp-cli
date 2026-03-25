@@ -38,7 +38,15 @@ fn help() {
 
 #[test]
 fn prompt_turn() {
-    let mut e2e = E2eHarness::bootstrap(Default::default());
+    fn response_fn(input: &[ContentBlock]) -> ContentBlock {
+        let response = format!("Reply: {}", extract_text_only(input));
+        ContentBlock::Text(TextContent::new(response))
+    }
+    let mut e2e = E2eConfig {
+        prompt_fn: Box::new(response_fn),
+        ..Default::default()
+    }
+    .bootstrap();
 
     // Step 1: Initialize handshake
     e2e.initialize_check().unwrap();
@@ -47,9 +55,12 @@ fn prompt_turn() {
     let response = e2e.new_session_check().unwrap();
 
     // Step 3: prompt turn
-    let prompt = ContentBlock::Text(TextContent::new("Prompt"));
-    let prompt_request = PromptRequest::new(response.session_id, vec![prompt.clone()]);
-    let (response, mut notifications) =
+    let input_prompt = "Prompt";
+    let prompt_request = PromptRequest::new(
+        response.session_id,
+        vec![ContentBlock::Text(TextContent::new(input_prompt))],
+    );
+    let (response, notifications) =
         e2e.client_request::<PromptResponse>(ClientRequest::PromptRequest(prompt_request));
     let response = response.unwrap();
     assert_eq!(response.stop_reason, StopReason::EndTurn);
@@ -58,26 +69,35 @@ fn prompt_turn() {
         1,
         "Server should echo back with original prompt"
     );
-    match notifications.pop().unwrap() {
-        AgentNotification::SessionNotification(n) => match n.update {
-            SessionUpdate::AgentMessageChunk(u) => assert_eq!(u.content, prompt),
-            u => panic!("Unexpected update: {u:?}"),
-        },
-        n => panic!("Unexpected notification: {n:?}"),
-    };
-
+    let content_blocks = extract_agent_message_chunks(&notifications);
+    let text = extract_text_only(&content_blocks);
+    assert_eq!(text, format!("Reply: {}", input_prompt));
     e2e.teardown();
+}
+
+fn extract_agent_message_chunks(notification: &[AgentNotification]) -> Vec<ContentBlock> {
+    notification
+        .iter()
+        .flat_map(|n| match n {
+            AgentNotification::SessionNotification(n) => match &n.update {
+                SessionUpdate::AgentMessageChunk(chunk) => Some(chunk.content.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
 fn run_outside_git_directory() {
     let tmp_dir = tempdir().unwrap();
-    let mut e2e = E2eHarness::bootstrap(E2eConfig {
+    let mut e2e = E2eConfig {
         // spawning in empty directory without git
         project_dir: Some(tmp_dir.path().to_path_buf()),
         suppress_stderr: true,
         ..Default::default()
-    });
+    }
+    .bootstrap();
 
     // Initialize should succeed even outside a git directory
     e2e.initialize_check().expect("Initialize should succeed");
@@ -104,13 +124,14 @@ fn run_outside_git_directory() {
 #[test]
 fn run_without_login() {
     // Emulating cli without login
-    let mut e2e = E2eHarness::bootstrap(E2eConfig {
+    let mut e2e = E2eConfig {
         keychain_file: Some("./not-existing-keychain-file".into()),
         suppress_stderr: true,
         explicit_access_tokens: None,
         start_server: false,
         ..Default::default()
-    });
+    }
+    .bootstrap();
 
     let Err(e) = e2e.initialize_check() else {
         panic!(
@@ -140,6 +161,8 @@ struct E2eHarness {
     server_handle: Option<JoinHandle<()>>,
 }
 
+type PromptFn = Box<dyn Fn(&[ContentBlock]) -> ContentBlock + Send>;
+
 #[non_exhaustive]
 struct E2eConfig {
     project_dir: Option<PathBuf>,
@@ -151,6 +174,63 @@ struct E2eConfig {
     start_server: bool,
     keychain_file: Option<PathBuf>,
     explicit_access_tokens: Option<AccessTokens>,
+    /// Function that handles ACP prompt
+    prompt_fn: PromptFn,
+}
+
+impl E2eConfig {
+    /// Start the mock server and jcp process, ready for testing.
+    fn bootstrap(self) -> E2eHarness {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("Unable to bind socket");
+
+        let addr = listener.local_addr().unwrap();
+        let url = Url::from_str(&format!("ws://{addr}")).unwrap();
+
+        let server_handle = if self.start_server {
+            Some(thread::spawn(move || {
+                serve_acp_client(listener, self.prompt_fn)
+            }))
+        } else {
+            None
+        };
+
+        let mut cmd = Command::new(get_jcp_binary_path());
+        cmd.args(["acp"])
+            .env(JCP_URL_ENV_NAME, url.as_str())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+
+        if let Some(keychain_file) = self.keychain_file {
+            cmd.env(KEYCHAIN_FILE_ENV_NAME, keychain_file.to_str().unwrap());
+        }
+        if let Some(access_tokens) = self.explicit_access_tokens {
+            cmd.env(JCP_ACCESS_TOKEN_ENV_NAME, access_tokens.jcp_access_token);
+            if let Some(ai_token) = access_tokens.ai_access_token {
+                cmd.env(AI_PLATFORM_TOKEN_ENV_NAME, ai_token);
+            }
+        }
+
+        if let Some(project_dir) = self.project_dir {
+            cmd.current_dir(project_dir);
+        }
+        if self.suppress_stderr {
+            cmd.stderr(Stdio::null());
+        }
+
+        let mut child = cmd.spawn().expect("Failed to spawn child process");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+
+        E2eHarness {
+            jcp: ChildProcess {
+                child,
+                stdin,
+                stdout,
+            },
+            next_request_id: 1,
+            server_handle,
+        }
+    }
 }
 
 impl Default for E2eConfig {
@@ -164,62 +244,12 @@ impl Default for E2eConfig {
                 jcp_access_token: "test-token".into(),
                 ai_access_token: None,
             }),
+            prompt_fn: Box::new(echo_back),
         }
     }
 }
 
 impl E2eHarness {
-    /// Start the mock server and jcp process, ready for testing.
-    fn bootstrap(config: E2eConfig) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("Unable to bind socket");
-
-        let addr = listener.local_addr().unwrap();
-        let url = Url::from_str(&format!("ws://{addr}")).unwrap();
-
-        let server_handle = if config.start_server {
-            Some(thread::spawn(move || serve_acp_client(listener)))
-        } else {
-            None
-        };
-
-        let mut cmd = Command::new(get_jcp_binary_path());
-        cmd.args(["acp"])
-            .env(JCP_URL_ENV_NAME, url.as_str())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-
-        if let Some(keychain_file) = config.keychain_file {
-            cmd.env(KEYCHAIN_FILE_ENV_NAME, keychain_file.to_str().unwrap());
-        }
-        if let Some(access_tokens) = config.explicit_access_tokens {
-            cmd.env(JCP_ACCESS_TOKEN_ENV_NAME, access_tokens.jcp_access_token);
-            if let Some(ai_token) = access_tokens.ai_access_token {
-                cmd.env(AI_PLATFORM_TOKEN_ENV_NAME, ai_token);
-            }
-        }
-
-        if let Some(project_dir) = config.project_dir {
-            cmd.current_dir(project_dir);
-        }
-        if config.suppress_stderr {
-            cmd.stderr(Stdio::null());
-        }
-
-        let mut child = cmd.spawn().expect("Failed to spawn child process");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-
-        Self {
-            jcp: ChildProcess {
-                child,
-                stdin,
-                stdout,
-            },
-            next_request_id: 1,
-            server_handle,
-        }
-    }
-
     /// Does initialization and basic checks
     #[track_caller]
     fn initialize_check(&mut self) -> Result<InitializeResponse, acp::Error> {
@@ -315,7 +345,7 @@ impl E2eHarness {
 /// 1. supports basic flow (Initialize->New Session->Text Prompt)
 /// 2. on all prompts server reply with the same content
 /// 3. server is single user. After first user disconnects server exits
-fn serve_acp_client(listener: TcpListener) {
+fn serve_acp_client(listener: TcpListener, prompt_fn: PromptFn) {
     fn send_jrpc<S: Read + Write>(ws: &mut WebSocket<S>, msg: AgentOutgoingMessage) {
         let json = serde_json::to_string(&JsonRpcMessage::wrap(msg)).expect("Failed serializing");
         // We don't really care about sending errors.
@@ -354,20 +384,18 @@ fn serve_acp_client(listener: TcpListener) {
                         AgentResponse::NewSessionResponse(NewSessionResponse::new(session_id))
                     }
                     ClientRequest::PromptRequest(r) => {
-                        if let Some(block) = r.prompt.first() {
-                            let update =
-                                SessionUpdate::AgentMessageChunk(ContentChunk::new(block.clone()));
-                            let notification = AgentNotification::SessionNotification(
-                                SessionNotification::new(session_id, update),
-                            );
-                            send_jrpc(
-                                &mut ws,
-                                AgentOutgoingMessage::Notification(Notification {
-                                    method: notification.method().into(),
-                                    params: Some(notification),
-                                }),
-                            );
-                        }
+                        let reply = prompt_fn(&r.prompt);
+                        let update = SessionUpdate::AgentMessageChunk(ContentChunk::new(reply));
+                        let notification = AgentNotification::SessionNotification(
+                            SessionNotification::new(session_id, update),
+                        );
+                        send_jrpc(
+                            &mut ws,
+                            AgentOutgoingMessage::Notification(Notification {
+                                method: notification.method().into(),
+                                params: Some(notification),
+                            }),
+                        );
                         AgentResponse::PromptResponse(PromptResponse::new(StopReason::EndTurn))
                     }
                     _ => continue,
@@ -421,4 +449,20 @@ fn get_jcp_binary_path() -> PathBuf {
         path.set_extension("exe");
     }
     path
+}
+
+fn echo_back(input: &[ContentBlock]) -> ContentBlock {
+    ContentBlock::Text(TextContent::new(extract_text_only(input)))
+}
+
+/// Extract text content from an input and ignore everything else
+fn extract_text_only(input: &[ContentBlock]) -> String {
+    input
+        .iter()
+        .flat_map(|b| match b {
+            ContentBlock::Text(text_content) => Some(text_content.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
