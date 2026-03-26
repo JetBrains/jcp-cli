@@ -111,8 +111,7 @@ fn run_outside_git_directory() {
         Err(e) => {
             assert_eq!(e.code, acp::ErrorCode::InvalidParams);
             assert!(
-                e.message
-                    .contains("fatal: not a git repository (or any of the parent directories)"),
+                e.message.contains("fatal: not a git repository"),
                 "Expected git error message, got: {}",
                 e.message
             );
