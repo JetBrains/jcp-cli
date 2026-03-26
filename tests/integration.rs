@@ -115,6 +115,36 @@ fn adapter_need_to_inject_chunk_with_git_info() {
     assert_eq!(response.stop_reason, StopReason::EndTurn);
 }
 
+/// Adapter should not force compatibility when it's not needed (be transparent).
+/// It means that `Initialize`/`NewSession` request and response definition must me compatible
+/// across all parties (client, adapter and agent). But any other request or notification
+/// should be passes as is without raising any errors.
+#[test]
+fn invalid_messages_bypass() {
+    let mut harness = test_harness();
+
+    harness.initialize();
+    harness.new_session();
+
+    // Sending invalid JSON-RPC message from the client
+    {
+        let expected_msg = Value::Bool(true);
+        harness.client_send_json(expected_msg.clone());
+
+        let agent_msg = harness.agent_recv();
+        assert_eq!(agent_msg.0, expected_msg);
+    }
+
+    // Sending invalid JSON-RPC message from the agent
+    {
+        let expected_msg = Value::Array(vec![Value::String("reply".to_string())]);
+        harness.agent_send_json(expected_msg.clone());
+
+        let agent_msg = harness.client_recv();
+        assert_eq!(agent_msg.0, expected_msg);
+    }
+}
+
 fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
     let Value::Object(json_meta) = serde_json::to_value(meta).unwrap() else {
         panic!("Unexpected json type")
