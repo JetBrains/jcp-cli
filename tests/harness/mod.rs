@@ -98,11 +98,16 @@ impl TestHarness {
         }));
 
         let value = serde_json::to_value(&msg).unwrap();
-        let _ = now_or_panic!(self.client.send(value));
-
-        self.deliver_transport_messages();
+        self.client_send_json(value);
 
         id
+    }
+
+    /// Send a raw JSON payload from the client to the adapter
+    pub fn client_send_json(&mut self, payload: JsonValue) {
+        let _ = now_or_panic!(self.client.send(payload));
+
+        self.deliver_transport_messages();
     }
 
     /// Sends a request from client side and then reply from the agent side
@@ -153,7 +158,12 @@ impl TestHarness {
         )));
 
         let value = serde_json::to_value(&msg).unwrap();
-        let _ = now_or_panic!(self.agent.send(value));
+        self.agent_send_json(value)
+    }
+
+    /// Send a raw JSON payload from an agent to the adapter
+    pub fn agent_send_json(&mut self, payload: JsonValue) {
+        let _ = now_or_panic!(self.agent.send(payload));
 
         self.deliver_transport_messages();
     }

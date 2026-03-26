@@ -394,56 +394,68 @@ impl Adapter {
     async fn handle_client_message(&mut self, msg: JsonValue) -> io::Result<()> {
         let _ = self.traffic_log.write(&msg).await;
 
-        if let Some((id, method, mut request)) =
-            decode_acp_request::<AgentSide>(&msg).map_err(to_io_invalid_data_err)?
-        {
-            if let ClientRequest::NewSessionRequest(r) = &mut request {
-                // Read git info from the session's working directory
-                //
-                // NOTE: we using blocking call in async context here. It will block current task.
-                // We do it to preserve simple testing model. The adapter loop will be blocked until
-                // we read git info anyway. It only makes sense to solve this issue if we're will move to a fully
-                // multiplexed implementation where different sessions are processed independently.
-                match self.git_tool.read_remote_info(&r.cwd) {
-                    Ok(remote) => {
-                        let meta = NewSessionMeta {
-                            remote,
-                            ai_platform_token: self.ai_platform_token.clone(),
-                        };
-                        inject_new_session_meta(r, &meta)?;
+        match decode_acp_request::<AgentSide>(&msg) {
+            // ACP request handling
+            Ok(Some((id, method, mut request))) => {
+                if let ClientRequest::NewSessionRequest(r) = &mut request {
+                    // Read git info from the session's working directory
+                    //
+                    // NOTE: we using blocking call in async context here. It will block current task.
+                    // We do it to preserve simple testing model. The adapter loop will be blocked until
+                    // we read git info anyway. It only makes sense to solve this issue if we're will move to a fully
+                    // multiplexed implementation where different sessions are processed independently.
+                    match self.git_tool.read_remote_info(&r.cwd) {
+                        Ok(remote) => {
+                            let meta = NewSessionMeta {
+                                remote,
+                                ai_platform_token: self.ai_platform_token.clone(),
+                            };
+                            inject_new_session_meta(r, &meta)?;
+                        }
+                        Err(e) => {
+                            let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(
+                                Response::Error {
+                                    id: id.clone(),
+                                    error: acp::Error::new(
+                                        acp::ErrorCode::InvalidParams.into(),
+                                        e.to_string(),
+                                    ),
+                                },
+                            ));
+                            let value =
+                                serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
+                            self.client.send(value).await?;
+                            return Ok(());
+                        }
                     }
-                    Err(e) => {
-                        let msg =
-                            JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::Error {
-                                id: id.clone(),
-                                error: acp::Error::new(
-                                    acp::ErrorCode::InvalidParams.into(),
-                                    e.to_string(),
-                                ),
-                            }));
-                        let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
-                        self.client.send(value).await?;
-                        return Ok(());
-                    }
+                } else if let ClientRequest::PromptRequest(r) = &request {
+                    self.prompt_request_mapping
+                        .insert(id.clone(), r.session_id.clone());
                 }
-            } else if let ClientRequest::PromptRequest(r) = &request {
-                self.prompt_request_mapping
-                    .insert(id.clone(), r.session_id.clone());
+
+                // Sending message to the server
+                let msg = JsonRpcMessage::wrap(ClientOutgoingMessage::Request(Request {
+                    id,
+                    method: method.into(),
+                    params: Some(request),
+                }));
+
+                let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
+                self.agent.send(value).await?;
             }
 
-            // Sending message to the server
-            let msg = JsonRpcMessage::wrap(ClientOutgoingMessage::Request(Request {
-                id,
-                method: method.into(),
-                params: Some(request),
-            }));
+            // ACP notification handling
+            Ok(None) => self.agent.send(msg).await?,
 
-            let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
-            self.agent.send(value).await?;
-        } else {
-            // Sending notifications to JCP without modification
-            self.agent.send(msg).await?;
+            Err(e) => {
+                // message is a valid JSON, but it doesn't match our JSON-RPC/ACP protocol expectations.
+                // Forwarding message to the client to be as transparent as possible to minimize consequences
+                // if compatibility was broken
+                eprintln!("Unable to read ACP message: {e}");
+                self.agent.send(msg).await?;
+            }
         }
+
         Ok(())
     }
 
@@ -499,17 +511,23 @@ pub fn decode_acp_request<T: Side>(
     // This is an ugly hack, but we need to serialize here back to string, otherwise
     // we can't use AgentSide::decode_request()
     let msg_str = json_rpc.to_string();
-    // SAFETY: unwrap() is safe here, because we're serialized proper json on a previous line
-    let rpc_msg: RawIncomingMessage<'_> = serde_json::from_str(&msg_str).unwrap();
-    if let Some((method, id)) = rpc_msg.method.zip(rpc_msg.id) {
-        Ok(Some((
-            id,
-            method.to_string(),
-            T::decode_request(method, rpc_msg.params)?,
-        )))
-    } else {
-        // Not a request
-        Ok(None)
+    match serde_json::from_str::<RawIncomingMessage>(&msg_str) {
+        Ok(rpc_msg) => {
+            if let Some((method, id)) = rpc_msg.method.zip(rpc_msg.id) {
+                Ok(Some((
+                    id,
+                    method.to_string(),
+                    T::decode_request(method, rpc_msg.params)?,
+                )))
+            } else {
+                // Not a request
+                Ok(None)
+            }
+        }
+        Err(e) => Err(acp::Error::new(
+            acp::ErrorCode::ParseError.into(),
+            e.to_string(),
+        )),
     }
 }
 
