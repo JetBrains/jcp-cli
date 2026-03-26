@@ -28,6 +28,9 @@ const CALLBACK_PATH: &str = "/space/auth";
 /// Contains access tokens to JCP and JetBrains AI Platform
 pub struct AccessTokens {
     pub jcp_access_token: String,
+
+    /// By default this token is provisioned by the Agent Spawner, but can be overriden
+    /// for development purposes
     pub ai_access_token: Option<String>,
 }
 

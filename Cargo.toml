@@ -50,6 +50,7 @@ drop-check = { git = "https://github.com/bazhenov/drop-check" }
 tokio-test = "0.4"
 tokio-stream = "0.1"
 tempfile = "3"
+tokio-util = { version = "0.7.18", features = ["compat"] }
 
 # The profile that 'dist' will build with
 [profile.dist]
