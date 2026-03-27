@@ -52,7 +52,7 @@ async fn prompt_turn() {
     LocalSet::new()
         .run_until(async {
             let e2e = E2eConfig {
-                prompt_fn: Box::new(response_fn),
+                server_fn: Some(Box::new(response_fn)),
                 ..Default::default()
             }
             .bootstrap();
@@ -144,7 +144,7 @@ async fn run_without_login() {
                 keychain_file: Some("./not-existing-keychain-file".into()),
                 suppress_stderr: true,
                 explicit_access_tokens: None,
-                start_server: false,
+                server_fn: None,
                 ..Default::default()
             }
             .bootstrap();
@@ -211,13 +211,11 @@ struct E2eConfig {
     /// If true, stderr of jcp binary will be sent to /dev/null
     /// Set it if test scenario expects to generate errors/warning is jcp binary
     suppress_stderr: bool,
-    /// Whether we need to start an ACP server. Some tests that checks fully local beheviour
-    /// do not have to start server at all
-    start_server: bool,
+    /// Function that handles ACP prompt. If None do not start a server.
+    /// Some tests that checks fully local beheviour do not have to start server at all
+    server_fn: Option<PromptFn>,
     keychain_file: Option<PathBuf>,
     explicit_access_tokens: Option<AccessTokens>,
-    /// Function that handles ACP prompt
-    prompt_fn: PromptFn,
 }
 
 impl E2eConfig {
@@ -228,13 +226,10 @@ impl E2eConfig {
         let addr = listener.local_addr().unwrap();
         let url = Url::from_str(&format!("ws://{addr}")).unwrap();
 
-        let server_handle = if self.start_server {
-            Some(thread::spawn(move || {
-                serve_acp_client(listener, self.prompt_fn)
-            }))
-        } else {
-            None
-        };
+        // Only start server if prompt function has been given
+        let server_handle = self
+            .server_fn
+            .map(|f| thread::spawn(move || serve_acp_client(listener, f)));
 
         let mut cmd = tokio::process::Command::new(get_jcp_binary_path());
         cmd.args(["acp"])
@@ -289,12 +284,11 @@ impl Default for E2eConfig {
             project_dir: None,
             suppress_stderr: false,
             keychain_file: None,
-            start_server: true,
+            server_fn: Some(Box::new(echo_back)),
             explicit_access_tokens: Some(AccessTokens {
                 jcp_access_token: "test-token".into(),
                 ai_access_token: None,
             }),
-            prompt_fn: Box::new(echo_back),
         }
     }
 }
