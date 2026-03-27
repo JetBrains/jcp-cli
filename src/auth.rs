@@ -29,7 +29,7 @@ const CALLBACK_PATH: &str = "/space/auth";
 pub struct AccessTokens {
     pub jcp_access_token: String,
 
-    /// By default this token is provisioned by the Agent Spawner, but can be overriden
+    /// By default this token is provisioned by the Agent Spawner, but can be overridden
     /// for development purposes
     pub ai_access_token: Option<String>,
 }
