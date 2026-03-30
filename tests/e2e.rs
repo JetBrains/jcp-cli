@@ -1,27 +1,33 @@
 use agent_client_protocol::{
-    self as acp, AgentNotification, AgentResponse, AgentSide, ClientRequest, ClientSide,
-    ContentBlock, ContentChunk, InitializeRequest, InitializeResponse, JsonRpcMessage,
-    NewSessionRequest, NewSessionResponse, Notification, PromptRequest, PromptResponse,
-    ProtocolVersion, Request, RequestId, Response, SessionNotification, SessionUpdate, Side,
-    StopReason, TextContent,
+    self as acp, Agent, AgentNotification, AgentResponse, AgentSide, Client, ClientRequest,
+    ClientSideConnection, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
+    JsonRpcMessage, NewSessionRequest, NewSessionResponse, Notification, PromptRequest,
+    PromptResponse, ProtocolVersion, RequestPermissionRequest, RequestPermissionResponse, Response,
+    SessionNotification, SessionUpdate, Side, StopReason, TextContent,
 };
 use jcp::{
-    AgentOutgoingMessage, ClientOutgoingMessage, JCP_URL_ENV_NAME, RawIncomingMessage,
+    AgentOutgoingMessage, JCP_URL_ENV_NAME, RawIncomingMessage,
     auth::AccessTokens,
     keychain::{
         AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, file::KEYCHAIN_FILE_ENV_NAME,
     },
 };
-use serde::de::DeserializeOwned;
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    cell::RefCell,
+    io::{Read, Write},
     net::TcpListener,
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Command, Stdio},
+    rc::Rc,
     str::FromStr,
     thread::{self, JoinHandle},
 };
 use tempfile::tempdir;
+use tokio::{
+    process::Child,
+    task::{AbortHandle, LocalSet, spawn_local},
+};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tungstenite::{Message, Utf8Bytes, WebSocket};
 use url::Url;
 
@@ -36,128 +42,165 @@ fn help() {
     assert!(stdout.contains("Usage:"), "Expected 'Usage:' in output");
 }
 
-#[test]
-fn prompt_turn() {
+#[tokio::test]
+async fn prompt_turn() {
     fn response_fn(input: &[ContentBlock]) -> ContentBlock {
         let response = format!("Reply: {}", extract_text_only(input));
         ContentBlock::Text(TextContent::new(response))
     }
-    let mut e2e = E2eConfig {
-        prompt_fn: Box::new(response_fn),
-        ..Default::default()
-    }
-    .bootstrap();
 
-    // Step 1: Initialize handshake
-    e2e.initialize_check().unwrap();
+    LocalSet::new()
+        .run_until(async {
+            let e2e = E2eConfig {
+                server_fn: Some(Box::new(response_fn)),
+                ..Default::default()
+            }
+            .bootstrap();
 
-    // Step 2: Creating a new session
-    let response = e2e.new_session_check().unwrap();
+            // Step 1: Initialize handshake
+            e2e.initialize_check().await.unwrap();
 
-    // Step 3: prompt turn
-    let input_prompt = "Prompt";
-    let prompt_request = PromptRequest::new(
-        response.session_id,
-        vec![ContentBlock::Text(TextContent::new(input_prompt))],
-    );
-    let (response, notifications) =
-        e2e.client_request::<PromptResponse>(ClientRequest::PromptRequest(prompt_request));
-    let response = response.unwrap();
-    assert_eq!(response.stop_reason, StopReason::EndTurn);
-    assert_eq!(
-        notifications.len(),
-        1,
-        "Server should echo back with original prompt"
-    );
-    let content_blocks = extract_agent_message_chunks(&notifications);
-    let text = extract_text_only(&content_blocks);
-    assert_eq!(text, format!("Reply: {}", input_prompt));
-    e2e.teardown();
+            // Step 2: Creating a new session
+            let response = e2e.new_session_check().await.unwrap();
+
+            // Step 3: prompt turn
+            let input_prompt = "Prompt";
+            let response = e2e
+                .client
+                .prompt(PromptRequest::new(
+                    response.session_id,
+                    vec![input_prompt.into()],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.stop_reason, StopReason::EndTurn);
+
+            let notifications = e2e.take_notifications().await;
+            assert_eq!(
+                notifications.len(),
+                1,
+                "Server should echo back with original prompt"
+            );
+            let content_blocks = extract_session_message_chunks(&notifications);
+            let text = extract_text_only(&content_blocks);
+            assert_eq!(text, format!("Reply: {}", input_prompt));
+            e2e.teardown().await;
+        })
+        .await;
 }
 
-fn extract_agent_message_chunks(notification: &[AgentNotification]) -> Vec<ContentBlock> {
-    notification
+fn extract_session_message_chunks(notifications: &[SessionNotification]) -> Vec<ContentBlock> {
+    notifications
         .iter()
-        .flat_map(|n| match n {
-            AgentNotification::SessionNotification(n) => match &n.update {
-                SessionUpdate::AgentMessageChunk(chunk) => Some(chunk.content.clone()),
-                _ => None,
-            },
+        .flat_map(|n| match &n.update {
+            SessionUpdate::AgentMessageChunk(chunk) => Some(chunk.content.clone()),
             _ => None,
         })
         .collect()
 }
 
-#[test]
-fn run_outside_git_directory() {
-    let tmp_dir = tempdir().unwrap();
-    let mut e2e = E2eConfig {
-        // spawning in empty directory without git
-        project_dir: Some(tmp_dir.path().to_path_buf()),
-        suppress_stderr: true,
-        ..Default::default()
-    }
-    .bootstrap();
+#[tokio::test]
+async fn run_outside_git_directory() {
+    LocalSet::new()
+        .run_until(async {
+            let tmp_dir = tempdir().unwrap();
+            let e2e = E2eConfig {
+                // spawning in empty directory without git
+                project_dir: Some(tmp_dir.path().to_path_buf()),
+                suppress_stderr: true,
+                ..Default::default()
+            }
+            .bootstrap();
 
-    // Initialize should succeed even outside a git directory
-    e2e.initialize_check().expect("Initialize should succeed");
+            // Initialize should succeed even outside a git directory
+            e2e.initialize_check()
+                .await
+                .expect("Initialize should succeed");
 
-    // NewSession should fail because cwd is not a git repository
-    let (response, _) = e2e.client_request::<NewSessionResponse>(ClientRequest::NewSessionRequest(
-        NewSessionRequest::new("./"),
-    ));
-    match response {
-        Ok(r) => panic!("JSON RPC error is expected. Got: {r:?}"),
-        Err(e) => {
-            assert_eq!(e.code, acp::ErrorCode::InvalidParams);
-            assert!(
-                e.message.contains("fatal: not a git repository"),
-                "Expected git error message, got: {}",
-                e.message
-            );
-        }
-    }
-    e2e.teardown();
+            // NewSession should fail because cwd is not a git repository
+            let result = e2e.client.new_session(NewSessionRequest::new("./")).await;
+            match result {
+                Ok(r) => panic!("JSON RPC error is expected. Got: {r:?}"),
+                Err(e) => {
+                    assert_eq!(e.code, acp::ErrorCode::InvalidParams);
+                    assert!(
+                        e.message.contains("fatal: not a git repository"),
+                        "Expected git error message, got: {}",
+                        e.message
+                    );
+                }
+            }
+            e2e.teardown().await;
+        })
+        .await;
 }
 
-#[test]
-fn run_without_login() {
-    // Emulating cli without login
-    let mut e2e = E2eConfig {
-        keychain_file: Some("./not-existing-keychain-file".into()),
-        suppress_stderr: true,
-        explicit_access_tokens: None,
-        start_server: false,
-        ..Default::default()
+#[tokio::test]
+async fn run_without_login() {
+    LocalSet::new()
+        .run_until(async {
+            // Emulating cli without login
+            let e2e = E2eConfig {
+                keychain_file: Some("./not-existing-keychain-file".into()),
+                suppress_stderr: true,
+                explicit_access_tokens: None,
+                server_fn: None,
+                ..Default::default()
+            }
+            .bootstrap();
+
+            let Err(e) = e2e.initialize_check().await else {
+                panic!(
+                    "InitializeRequest must fail, because we are not logged in. Instead got successful result"
+                );
+            };
+
+            let msg = e.to_string();
+            assert!(
+                msg.contains("`jcp login`"),
+                "Expecting message saying that user need to do `jcp login` first. Got: {msg}"
+            );
+
+            e2e.teardown().await;
+        })
+        .await;
+}
+
+/// Mock ACP client implementation for tests.
+///
+/// Collects session notifications for later inspection.
+struct TestClient {
+    notifications: Rc<RefCell<Vec<SessionNotification>>>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Client for TestClient {
+    async fn request_permission(
+        &self,
+        _args: RequestPermissionRequest,
+    ) -> acp::Result<RequestPermissionResponse> {
+        Err(acp::Error::method_not_found())
     }
-    .bootstrap();
 
-    let Err(e) = e2e.initialize_check() else {
-        panic!(
-            "InitializeRequest must fail, because we are not logged in. Instead got successful result"
-        );
-    };
-
-    let msg = e.to_string();
-    assert!(
-        msg.contains("`jcp login`"),
-        "Expecting message saying that user need to do `jcp login` first. Got: {msg}"
-    );
-
-    e2e.teardown();
+    async fn session_notification(&self, args: SessionNotification) -> acp::Result<()> {
+        self.notifications.borrow_mut().push(args);
+        Ok(())
+    }
 }
 
 /// E2E test harness that manages mock server and jcp processes.
 ///
 /// Starts an in-process mock ACP server on a background task
-/// and spawns `jcp acp`, providing a typed API for sending client
-/// requests and receiving responses.
-///
-/// Needs to be shut down using [`Self::shutdown()`].
+/// and spawns `jcp acp`, using [`ClientSideConnection`] to communicate
+/// with jcp over its stdin/stdout.
 struct E2eHarness {
-    jcp: ChildProcess,
-    next_request_id: i64,
+    client: ClientSideConnection,
+    notifications: Rc<RefCell<Vec<SessionNotification>>>,
+    child: Child,
     server_handle: Option<JoinHandle<()>>,
+    /// Abort handle used to basically close stdin of an adapter process, so that it can
+    /// terminated gracefully
+    adapter_abort_handle: AbortHandle,
 }
 
 type PromptFn = Box<dyn Fn(&[ContentBlock]) -> ContentBlock + Send>;
@@ -168,13 +211,11 @@ struct E2eConfig {
     /// If true, stderr of jcp binary will be sent to /dev/null
     /// Set it if test scenario expects to generate errors/warning is jcp binary
     suppress_stderr: bool,
-    /// Whether we need to start an ACP server. Some tests that checks fully local beheviour
-    /// do not have to start server at all
-    start_server: bool,
+    /// Function that handles ACP prompt. If None do not start a server.
+    /// Some tests that checks fully local beheviour do not have to start server at all
+    server_fn: Option<PromptFn>,
     keychain_file: Option<PathBuf>,
     explicit_access_tokens: Option<AccessTokens>,
-    /// Function that handles ACP prompt
-    prompt_fn: PromptFn,
 }
 
 impl E2eConfig {
@@ -185,15 +226,12 @@ impl E2eConfig {
         let addr = listener.local_addr().unwrap();
         let url = Url::from_str(&format!("ws://{addr}")).unwrap();
 
-        let server_handle = if self.start_server {
-            Some(thread::spawn(move || {
-                serve_acp_client(listener, self.prompt_fn)
-            }))
-        } else {
-            None
-        };
+        // Only start server if prompt function has been given
+        let server_handle = self
+            .server_fn
+            .map(|f| thread::spawn(move || serve_acp_client(listener, f)));
 
-        let mut cmd = Command::new(get_jcp_binary_path());
+        let mut cmd = tokio::process::Command::new(get_jcp_binary_path());
         cmd.args(["acp"])
             .env(JCP_URL_ENV_NAME, url.as_str())
             .stdin(Stdio::piped())
@@ -217,17 +255,25 @@ impl E2eConfig {
         }
 
         let mut child = cmd.spawn().expect("Failed to spawn child process");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let stdin = child.stdin.take().unwrap().compat_write();
+        let stdout = child.stdout.take().unwrap().compat();
+
+        let notifications = Rc::new(RefCell::new(Vec::new()));
+        let client = TestClient {
+            notifications: Rc::clone(&notifications),
+        };
+
+        let (client, io_task) = ClientSideConnection::new(client, stdin, stdout, |f| {
+            spawn_local(f);
+        });
+        let io_task = spawn_local(async { io_task.await.unwrap() });
 
         E2eHarness {
-            jcp: ChildProcess {
-                child,
-                stdin,
-                stdout,
-            },
-            next_request_id: 1,
+            client,
+            notifications,
+            child,
             server_handle,
+            adapter_abort_handle: io_task.abort_handle(),
         }
     }
 }
@@ -238,101 +284,46 @@ impl Default for E2eConfig {
             project_dir: None,
             suppress_stderr: false,
             keychain_file: None,
-            start_server: true,
+            server_fn: Some(Box::new(echo_back)),
             explicit_access_tokens: Some(AccessTokens {
                 jcp_access_token: "test-token".into(),
                 ai_access_token: None,
             }),
-            prompt_fn: Box::new(echo_back),
         }
     }
 }
 
 impl E2eHarness {
     /// Does initialization and basic checks
-    #[track_caller]
-    fn initialize_check(&mut self) -> Result<InitializeResponse, acp::Error> {
-        let (response, _) = self.client_request::<InitializeResponse>(
-            ClientRequest::InitializeRequest(InitializeRequest::new(ProtocolVersion::V1)),
-        );
-        let response = response?;
+    async fn initialize_check(&self) -> Result<InitializeResponse, acp::Error> {
+        let response = self
+            .client
+            .initialize(InitializeRequest::new(ProtocolVersion::V1))
+            .await?;
         assert_eq!(response.protocol_version, ProtocolVersion::V1);
         Ok(response)
     }
 
-    fn new_session_check(&mut self) -> Result<NewSessionResponse, acp::Error> {
-        let (response, _) = self.client_request::<NewSessionResponse>(
-            ClientRequest::NewSessionRequest(NewSessionRequest::new("./")),
-        );
-        let response = response?;
+    async fn new_session_check(&self) -> Result<NewSessionResponse, acp::Error> {
+        let response = self
+            .client
+            .new_session(NewSessionRequest::new("./"))
+            .await?;
         assert!(!response.session_id.0.is_empty());
         Ok(response)
     }
 
-    /// Send a typed request and receive a typed response as well as all notifications that were sent by an agent
-    /// while the request was executed.
-    fn client_request<T: DeserializeOwned>(
-        &mut self,
-        request: ClientRequest,
-    ) -> (Result<T, acp::Error>, Vec<AgentNotification>) {
-        let request_id = self.next_request_id;
-        self.next_request_id += 1;
-
-        let msg = JsonRpcMessage::wrap(ClientOutgoingMessage::Request(Request {
-            id: RequestId::Number(request_id),
-            method: request.method().to_string().into(),
-            params: Some(request),
-        }));
-
-        let json = serde_json::to_string(&msg).expect("Failed to serialize request");
-        self.jcp.send_line(&json);
-
-        let mut notifications: Vec<AgentNotification> = vec![];
-
-        let response = loop {
-            let line = self.jcp.read_line();
-            let rpc_message: RawIncomingMessage =
-                serde_json::from_str(&line).expect("Failed to parse response JSON");
-
-            match (
-                rpc_message.id,
-                rpc_message.method,
-                rpc_message.params,
-                rpc_message.result,
-                rpc_message.error,
-            ) {
-                // Response handling
-                (Some(RequestId::Number(id)), None, None, Some(result), None) => {
-                    assert_eq!(
-                        request_id, id,
-                        "Incoming response is expected to have id {id}, got {request_id} instead"
-                    );
-                    break Ok(serde_json::from_str(result.get())
-                        .expect("Failed to deserialize response result"));
-                }
-                // Notifications handling
-                (None, Some(method), params, None, None) => {
-                    notifications
-                        .push(ClientSide::decode_notification(method, params).expect("Unable"));
-                }
-                // Error handling
-                (Some(RequestId::Number(id)), None, None, None, Some(error)) => {
-                    assert_eq!(
-                        request_id, id,
-                        "Incoming response is expected to have id {id}, got {request_id} instead"
-                    );
-                    break Err(error);
-                }
-                _ => panic!("Unexpected payload: {line}"),
-            }
-        };
-        (response, notifications)
+    /// Drains all collected session notifications.
+    async fn take_notifications(&self) -> Vec<SessionNotification> {
+        self.notifications.borrow_mut().drain(..).collect()
     }
 
-    fn teardown(mut self) {
+    async fn teardown(mut self) {
+        drop(self.client);
+        self.adapter_abort_handle.abort();
+        self.child.wait().await.ok();
         if let Some(server_join_handle) = self.server_handle.take() {
-            self.jcp.terminate();
-            server_join_handle.join().ok();
+            server_join_handle.join().unwrap();
         }
     }
 }
@@ -407,38 +398,6 @@ fn serve_acp_client(listener: TcpListener, prompt_fn: PromptFn) {
             Message::Close(_) => break,
             _ => continue,
         }
-    }
-}
-
-/// A simple wrapper around a child process with piped stdin/stdout.
-struct ChildProcess {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl ChildProcess {
-    fn send_line(&mut self, line: &str) {
-        // It's important to send newline character, so that transport will trigger on a new message
-        writeln!(self.stdin, "{}", line).expect("Failed to write to child stdin");
-        self.stdin.flush().expect("Failed to flush child stdin");
-    }
-
-    fn read_line(&mut self) -> String {
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("Failed to read from child stdout");
-        line
-    }
-
-    fn terminate(self) {
-        let Self {
-            mut child, stdin, ..
-        } = self;
-        // After closing stdin, adapter should exit gracefully
-        drop(stdin);
-        child.wait().ok();
     }
 }
 
