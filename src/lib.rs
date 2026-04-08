@@ -566,7 +566,8 @@ impl TrafficLog {
     pub async fn write(&mut self, msg: &JsonValue) -> io::Result<()> {
         if let Some(file) = &mut self.file {
             let json = serde_json::to_string_pretty(msg).map_err(to_io_invalid_data_err)?;
-            file.write_all(json.as_bytes()).await
+            file.write_all(json.as_bytes()).await?;
+            file.write_all(b"\n").await
         } else {
             Ok(())
         }
@@ -712,6 +713,16 @@ mod tests {
         assert!(
             msg.contains(revision),
             "Message: '{msg}' does not contain: {revision}",
+        );
+
+        // Both branch and revision empty → no message
+        assert_eq!(
+            git_end_turn_message(GitRemoteInfo {
+                branch: "".to_owned(),
+                url: url.to_owned(),
+                revision: "".to_owned(),
+            }),
+            None
         );
     }
 

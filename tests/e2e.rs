@@ -209,7 +209,7 @@ type PromptFn = Box<dyn Fn(&[ContentBlock]) -> ContentBlock + Send>;
 struct E2eConfig {
     project_dir: Option<PathBuf>,
     /// If true, stderr of jcp binary will be sent to /dev/null
-    /// Set it if test scenario expects to generate errors/warning is jcp binary
+    /// Set it if test scenario expects to generate errors/warnings in jcp binary
     suppress_stderr: bool,
     /// Function that handles ACP prompt. If None do not start a server.
     /// Some tests that checks fully local beheviour do not have to start server at all

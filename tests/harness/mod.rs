@@ -277,7 +277,7 @@ mod harness_test {
     use serde_json::json;
 
     #[test]
-    fn jprc_into_notification() {
+    fn jrpc_into_notification() {
         let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "method": "foo", "params": [0, 1]} });
         let (method, param) = msg.expect_notification::<Vec<u32>>();
         assert_eq!(method, "foo");
@@ -286,13 +286,13 @@ mod harness_test {
 
     #[test]
     #[should_panic = "Expected notification (no id), got request"]
-    fn jprc_into_notification_for_request() {
+    fn jrpc_into_notification_for_request() {
         let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "method": "foo", "result": 3} });
         msg.expect_notification::<u32>();
     }
 
     #[test]
-    fn jprc_into_request() {
+    fn jrpc_into_request() {
         let msg =
             JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "method": "foo", "params": [0, 1]} });
         let (method, id, params) = msg.expect_request::<Vec<u32>>();
@@ -302,14 +302,14 @@ mod harness_test {
     }
 
     #[test]
-    fn jprc_into_response_ok() {
+    fn jrpc_into_response_ok() {
         let msg = JRpcMessage(json! { {"jsonrpc": "2.0", "id": 5, "result": 42} });
         let result = msg.expect_response::<u32>();
         assert_eq!(result, (RequestId::Number(5), Ok(42)));
     }
 
     #[test]
-    fn jprc_into_response_err() {
+    fn jrpc_into_response_err() {
         let msg = JRpcMessage(
             json! { {"jsonrpc": "2.0", "id": 5, "error": {"code": -32600, "message": "Invalid Request"}} },
         );

@@ -116,9 +116,9 @@ fn adapter_need_to_inject_chunk_with_git_info() {
 }
 
 /// Adapter should not force compatibility when it's not needed (be transparent).
-/// It means that `Initialize`/`NewSession` request and response definition must me compatible
+/// It means that `Initialize`/`NewSession` request and response definition must be compatible
 /// across all parties (client, adapter and agent). But any other request or notification
-/// should be passes as is without raising any errors.
+/// should be passed as is without raising any errors.
 #[test]
 fn invalid_messages_bypass() {
     let mut harness = test_harness();

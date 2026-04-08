@@ -67,7 +67,10 @@ fn main() {
             }
         }
         Commands::Logout => {
-            keychain.delete_refresh_token().unwrap();
+            if let Err(e) = keychain.delete_refresh_token() {
+                eprintln!("Failed to delete refresh token from keychain: {}", e);
+                process::exit(1);
+            }
             eprintln!("Logout successful!");
         }
         Commands::Acp => run_adapter(keychain),
@@ -237,7 +240,7 @@ pub enum Error {
     #[error("Failed to join on tokio task: {0}")]
     TokioJoinError(#[from] JoinError),
 
-    #[error("Invalid URL: {1}, url: {0}")]
+    #[error("Invalid URL '{0}': {1}")]
     InvalidUrl(String, tungstenite::Error),
 
     #[error("Invalid ACP message: {0}")]
