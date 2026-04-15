@@ -3,12 +3,11 @@ use agent_client_protocol as acp;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use jcp::{
-    Adapter, GitCommandTool, IoTransport, JCP_URL_ENV_NAME, TrafficLog, Transport,
-    WebSocketTransport,
+    Adapter, EnvConfig, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
     auth::{self, AccessTokens, get_access_token, login},
     decode_acp_request,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
-    request_id,
+    request_id, staging_environment_config,
 };
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
@@ -19,8 +18,6 @@ use tokio::{
     task::{JoinError, spawn_blocking},
 };
 use tungstenite::client::IntoClientRequest;
-
-const DEFAULT_JCP_URL: &str = "wss://api.stgn.jetbrains.cloud/agent-spawner/acp";
 
 #[derive(Parser)]
 #[command(name = "jcp", version)]
@@ -49,10 +46,12 @@ fn main() {
     let cli = Cli::parse();
     let keychain = keychain::active_keychain();
 
+    let env_config = staging_environment_config();
+
     match cli.command {
         Commands::Login => {
             eprintln!("Starting authentication...");
-            match login() {
+            match login(&env_config) {
                 Ok(refresh_token) => {
                     if let Err(e) = keychain.store_refresh_token(&refresh_token) {
                         eprintln!("Failed to store refresh token in keychain: {}", e);
@@ -70,15 +69,11 @@ fn main() {
             keychain.delete_refresh_token().unwrap();
             eprintln!("Logout successful!");
         }
-        Commands::Acp => run_adapter(keychain),
+        Commands::Acp => run_adapter(keychain, &env_config),
     }
 }
 
-fn run_adapter(keychain: Box<dyn SecretBackend>) {
-    let jcp_url = env::var(JCP_URL_ENV_NAME)
-        .ok()
-        .unwrap_or(DEFAULT_JCP_URL.into());
-
+fn run_adapter(keychain: Box<dyn SecretBackend>, env_config: &EnvConfig) {
     let runtime = Runtime::new().expect("Failed to create Tokio runtime");
     runtime.block_on(async {
         let traffic_log = TrafficLog::new(env::var("TRAFFIC_LOG").ok()).await;
@@ -103,7 +98,7 @@ fn run_adapter(keychain: Box<dyn SecretBackend>) {
             .expect("Unexpected EOF");
         let request_id = request_id(&init_msg).unwrap_or(RequestId::Null);
 
-        match handshake_and_authenticate(&mut client, init_msg, keychain, &jcp_url).await {
+        match handshake_and_authenticate(&mut client, init_msg, keychain, env_config).await {
             Ok((uplink, tokens)) => {
                 // Run the adapter for the remainder of the session
                 let mut adapter =
@@ -146,7 +141,7 @@ async fn handshake_and_authenticate(
     client: &mut dyn Transport,
     initialize_request: JsonValue,
     keychain: Box<dyn SecretBackend>,
-    jcp_url: &str,
+    env_config: &EnvConfig,
 ) -> Result<(WebSocketTransport, AccessTokens), Error> {
     // Checking that this is indeed InitializeRequest
     let Some((_, _, ClientRequest::InitializeRequest(_))) =
@@ -157,11 +152,14 @@ async fn handshake_and_authenticate(
 
     // We can't call `authenticate()` synchronously here, because blocking reqwest implementation is
     // using tokio under the hood.
-    let tokens = spawn_blocking(move || authenticate(&*keychain)).await??;
+    let e = env_config.clone();
+    let tokens = spawn_blocking(move || authenticate(&*keychain, &e)).await??;
 
-    let mut request = jcp_url
+    let mut request = env_config
+        .agent_spawner_ws_url
+        .clone()
         .into_client_request()
-        .map_err(|e| Error::InvalidUrl(jcp_url.to_string(), e))?;
+        .map_err(|e| Error::InvalidUrl(env_config.agent_spawner_ws_url.clone(), e))?;
     request.headers_mut().insert(
         "Authorization",
         format!("Bearer {}", tokens.jcp_access_token)
@@ -204,7 +202,10 @@ async fn handshake_and_authenticate(
 /// [`JCP_ACCESS_TOKEN_ENV_NAME`]). If not, the refresh token is retrieved
 /// from the keychain and fresh access tokens are requested.
 /// Env variables still allow overriding respective tokens.
-fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
+fn authenticate(
+    keychain: &dyn SecretBackend,
+    env_config: &EnvConfig,
+) -> Result<AccessTokens, Error> {
     let jb_ai = env::var(AI_PLATFORM_TOKEN_ENV_NAME).ok();
     let jcp = env::var(JCP_ACCESS_TOKEN_ENV_NAME).ok();
 
@@ -212,7 +213,7 @@ fn authenticate(keychain: &dyn SecretBackend) -> Result<AccessTokens, Error> {
         jcp_token
     } else {
         let refresh_token = keychain.get_refresh_token()?.ok_or(Error::NoRefreshToken)?;
-        get_access_token(&refresh_token)?
+        get_access_token(&refresh_token, env_config)?
     };
     Ok(AccessTokens {
         jcp_access_token,

@@ -6,7 +6,7 @@ use agent_client_protocol::{
     SessionNotification, SessionUpdate, Side, StopReason, TextContent,
 };
 use jcp::{
-    AgentOutgoingMessage, JCP_URL_ENV_NAME, RawIncomingMessage,
+    AS_ACP_URL_ENV_NAME, AgentOutgoingMessage, RawIncomingMessage,
     auth::AccessTokens,
     keychain::{
         AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, file::KEYCHAIN_FILE_ENV_NAME,
@@ -233,7 +233,7 @@ impl E2eConfig {
 
         let mut cmd = tokio::process::Command::new(get_jcp_binary_path());
         cmd.args(["acp"])
-            .env(JCP_URL_ENV_NAME, url.as_str())
+            .env(AS_ACP_URL_ENV_NAME, url.as_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
 

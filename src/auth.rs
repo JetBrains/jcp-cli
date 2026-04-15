@@ -1,3 +1,4 @@
+use crate::EnvConfig;
 use jwt::Token;
 use oauth2::{
     AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope,
@@ -10,14 +11,8 @@ use thiserror::Error;
 use tiny_http::{Response, Server};
 use url::Url;
 
-/// Base URL for JetBrains OAuth provider
-const OAUTH_BASE_URL: &str = "https://public.aip.oauth.intservices.aws.intellij.net";
-
 /// OAuth client ID for AIR
 const CLIENT_ID: &str = "air";
-
-/// JetBrains Cloud Platform API base URL
-const JCP_API_URL: &str = "https://api.stgn.jetbrainscloud.com";
 
 /// Agent Spawner audience for upgrading OAuth access token
 const JCP_AS_AUDIENCE: &str = "jcp-agent-spawner";
@@ -44,7 +39,7 @@ pub struct AccessTokens {
 ///
 /// The refresh token can be stored (e.g., in keychain) and used with
 /// `get_access_token()` to obtain access tokens without re-authentication.
-pub fn login() -> Result<String, AuthError> {
+pub fn login(env_config: &EnvConfig) -> Result<String, AuthError> {
     let http_client = create_http_client()?;
 
     // Start local callback server
@@ -59,8 +54,8 @@ pub fn login() -> Result<String, AuthError> {
     let redirect_url = format!("http://localhost:{}{}", local_port, CALLBACK_PATH);
 
     // Configure OAuth client
-    let auth_url = format!("{}/oauth2/auth", OAUTH_BASE_URL);
-    let token_url = format!("{}/oauth2/token", OAUTH_BASE_URL);
+    let auth_url = format!("{}/auth", env_config.oauth_base_url);
+    let token_url = format!("{}/token", env_config.oauth_base_url);
 
     let client = BasicClient::new(ClientId::new(CLIENT_ID.to_string()))
         .set_auth_uri(AuthUrl::new(auth_url)?)
@@ -114,18 +109,18 @@ pub fn login() -> Result<String, AuthError> {
 /// 3. Switches the token audience to get a JCP-scoped token
 ///
 /// Use this with a refresh token obtained from [`login()`].
-pub fn get_access_token(refresh_token: &str) -> Result<String, AuthError> {
+pub fn get_access_token(refresh_token: &str, env_config: &EnvConfig) -> Result<String, AuthError> {
     let http_client = create_http_client()?;
 
     // Refresh to get a new access and ID tokens
-    let tokens = retrieve_jcp_access_and_id_tokens(&http_client, refresh_token)?;
+    let tokens = retrieve_jcp_access_and_id_tokens(&http_client, refresh_token, env_config)?;
 
     // Get organization info
-    let org_info = get_org_info(&http_client, &tokens.access_token)?;
+    let org_info = get_org_info(&http_client, &tokens.access_token, env_config)?;
 
     // Switch token audience for JCP access
     let jcp_access_token =
-        retrieve_jcp_scoped_access_token(&http_client, refresh_token, &org_info)?;
+        retrieve_jcp_scoped_access_token(&http_client, refresh_token, &org_info, env_config)?;
 
     Ok(jcp_access_token)
 }
@@ -141,8 +136,9 @@ fn create_http_client() -> Result<Client, AuthError> {
 fn retrieve_jcp_access_and_id_tokens(
     http_client: &Client,
     refresh_token: &str,
+    env_config: &EnvConfig,
 ) -> Result<OAuthTokenResponse, AuthError> {
-    let token_url = format!("{}/oauth2/token", OAUTH_BASE_URL);
+    let token_url = format!("{}/token", env_config.oauth_base_url);
 
     let response = http_client
         .post(&token_url)
@@ -160,9 +156,13 @@ fn retrieve_jcp_access_and_id_tokens(
 }
 
 /// Fetches organization info from JCP using the access token.
-fn get_org_info(http_client: &Client, access_token: &str) -> Result<OrgInfo, AuthError> {
+fn get_org_info(
+    http_client: &Client,
+    access_token: &str,
+    env_config: &EnvConfig,
+) -> Result<OrgInfo, AuthError> {
     let raw_token = http_client
-        .get(format!("{}/org/orgsuserinfo", JCP_API_URL))
+        .get(format!("{}/org/orgsuserinfo", env_config.jcp_api_url))
         .bearer_auth(access_token)
         .header("Accept", "application/jwt")
         .send()?
@@ -201,8 +201,9 @@ fn retrieve_jcp_scoped_access_token(
     http_client: &Client,
     refresh_token: &str,
     org_info: &OrgInfo,
+    env_config: &EnvConfig,
 ) -> Result<String, AuthError> {
-    let token_url = format!("{}/oauth2/token", OAUTH_BASE_URL);
+    let token_url = format!("{}/token", env_config.oauth_base_url);
 
     let response = http_client
         .post(&token_url)
