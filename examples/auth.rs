@@ -1,11 +1,12 @@
 use jcp::{
+    EnvConfig,
     auth::{get_access_token, login},
-    keychain, staging_environment_config,
+    keychain,
 };
 
 fn main() {
     let keychain = keychain::active_keychain();
-    let staging = staging_environment_config();
+    let staging = EnvConfig::staging();
     let refresh_token = keychain
         .get_refresh_token()
         .expect("Unable to read keychain")

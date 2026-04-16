@@ -7,7 +7,7 @@ use jcp::{
     auth::{self, AccessTokens, get_access_token, login},
     decode_acp_request,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
-    request_id, staging_environment_config,
+    request_id,
 };
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
@@ -23,6 +23,10 @@ use tungstenite::client::IntoClientRequest;
 #[command(name = "jcp", version)]
 #[command(about = "ACP-JCP adapter for JetBrains Cloud Platform")]
 struct Cli {
+    /// Use staging environment instead of production
+    #[arg(long = "staging", hide = true)]
+    staging: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -46,7 +50,12 @@ fn main() {
     let cli = Cli::parse();
     let keychain = keychain::active_keychain();
 
-    let env_config = staging_environment_config();
+    let env_config =
+        if cli.staging || env::var("JCP_ENVIRONMENT").ok().as_deref() == Some("staging") {
+            EnvConfig::staging()
+        } else {
+            EnvConfig::production()
+        };
 
     match cli.command {
         Commands::Login => {

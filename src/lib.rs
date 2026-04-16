@@ -26,6 +26,8 @@ pub mod keychain;
 
 /// The name of the environment variable that defines the URL to the Agent Spawner ACP WebSocket API
 pub const AS_ACP_URL_ENV_NAME: &str = "AS_ACP_URL";
+pub const OAUTH_URL_ENV_NAME: &str = "OAUTH_URL";
+pub const JCP_API_URL_ENV_NAME: &str = "JCP_API_URL";
 
 pub type AgentOutgoingMessage = OutgoingMessage<AgentSide, ClientSide>;
 pub type ClientOutgoingMessage = OutgoingMessage<ClientSide, AgentSide>;
@@ -586,7 +588,8 @@ fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: 
 }
 
 /// Environment configuration:
-/// - [`staging_environment_config()`]
+/// - [`Self::staging()`]
+/// - [`Self::production()`]
 #[derive(Clone)]
 pub struct EnvConfig {
     /// Agent Spawner ACP WebSocket url (should starts with ws/wss)
@@ -597,13 +600,26 @@ pub struct EnvConfig {
     pub jcp_api_url: String,
 }
 
-pub fn staging_environment_config() -> EnvConfig {
-    EnvConfig {
-        // Allowing to override AS url with environment variable
-        agent_spawner_ws_url: env::var(AS_ACP_URL_ENV_NAME)
-            .unwrap_or("wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into()),
-        oauth_base_url: "https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into(),
-        jcp_api_url: "https://api.stgn.jetbrainscloud.com".into(),
+impl EnvConfig {
+    pub fn staging() -> Self {
+        // Allowing to override urls with environment variable
+        Self {
+            agent_spawner_ws_url: env::var(AS_ACP_URL_ENV_NAME)
+                .unwrap_or("wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into()),
+            oauth_base_url: env::var(OAUTH_URL_ENV_NAME)
+                .unwrap_or("https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into()),
+            jcp_api_url: env::var(JCP_API_URL_ENV_NAME)
+                .unwrap_or("https://api.stgn.jetbrainscloud.com".into()),
+        }
+    }
+
+    pub fn production() -> Self {
+        // Production configuration is the same as staging for now
+        Self {
+            agent_spawner_ws_url: "wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into(),
+            oauth_base_url: "https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into(),
+            jcp_api_url: "https://api.stgn.jetbrainscloud.com".into(),
+        }
     }
 }
 

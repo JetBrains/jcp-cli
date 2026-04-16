@@ -232,7 +232,8 @@ impl E2eConfig {
             .map(|f| thread::spawn(move || serve_acp_client(listener, f)));
 
         let mut cmd = tokio::process::Command::new(get_jcp_binary_path());
-        cmd.args(["acp"])
+        // Ability to override URL's are only available under --staging flag
+        cmd.args(["--staging", "acp"])
             .env(AS_ACP_URL_ENV_NAME, url.as_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
