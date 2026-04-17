@@ -50,12 +50,7 @@ fn main() {
     let cli = Cli::parse();
     let keychain = keychain::active_keychain();
 
-    let env_config =
-        if cli.staging || env::var("JCP_ENVIRONMENT").ok().as_deref() == Some("staging") {
-            EnvConfig::staging()
-        } else {
-            EnvConfig::production()
-        };
+    let env_config = read_env_config(&cli);
 
     match cli.command {
         Commands::Login => {
@@ -228,6 +223,22 @@ fn authenticate(
         jcp_access_token,
         ai_access_token: jb_ai,
     })
+}
+
+fn read_env_config(cli: &Cli) -> EnvConfig {
+    if cli.staging {
+        EnvConfig::staging()
+    } else {
+        let env_var = env::var("JCP_ENVIRONMENT").ok();
+        match env_var.as_deref().unwrap_or_default() {
+            "" | "production" => EnvConfig::production(),
+            "staging" => EnvConfig::staging(),
+            name => {
+                eprintln!("Unknown environment name: {name}. Production will be used instead.");
+                EnvConfig::production()
+            }
+        }
+    }
 }
 
 #[derive(Error, Debug)]
