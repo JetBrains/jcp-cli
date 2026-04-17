@@ -9,7 +9,7 @@ use futures::FutureExt;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::{collections::HashMap, io, path::Path, process::Command};
+use std::{collections::HashMap, env, io, path::Path, process::Command};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines},
@@ -24,8 +24,10 @@ use tungstenite::{
 pub mod auth;
 pub mod keychain;
 
-/// The name of the environment variable that defines the URL to the JCP WS API
-pub const JCP_URL_ENV_NAME: &str = "JCP_URL";
+/// The name of the environment variable that defines the URL to the Agent Spawner ACP WebSocket API
+pub const AS_ACP_URL_ENV_NAME: &str = "AS_ACP_URL";
+pub const OAUTH_URL_ENV_NAME: &str = "OAUTH_URL";
+pub const JCP_API_URL_ENV_NAME: &str = "JCP_API_URL";
 
 pub type AgentOutgoingMessage = OutgoingMessage<AgentSide, ClientSide>;
 pub type ClientOutgoingMessage = OutgoingMessage<ClientSide, AgentSide>;
@@ -583,6 +585,42 @@ fn inject_new_session_meta(req: &mut NewSessionRequest, meta: &NewSessionMeta) -
 
 fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
+}
+
+/// Environment configuration:
+/// - [`Self::staging()`]
+/// - [`Self::production()`]
+#[derive(Clone)]
+pub struct EnvConfig {
+    /// Agent Spawner ACP WebSocket url (should starts with ws/wss)
+    pub agent_spawner_ws_url: String,
+    /// Base URL for JetBrains OAuth provider
+    pub oauth_base_url: String,
+    /// JetBrains Cloud Platform API base URL. Used to fetch Organization info
+    pub jcp_api_url: String,
+}
+
+impl EnvConfig {
+    pub fn staging() -> Self {
+        // Allowing to override urls with environment variable
+        Self {
+            agent_spawner_ws_url: env::var(AS_ACP_URL_ENV_NAME)
+                .unwrap_or("wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into()),
+            oauth_base_url: env::var(OAUTH_URL_ENV_NAME)
+                .unwrap_or("https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into()),
+            jcp_api_url: env::var(JCP_API_URL_ENV_NAME)
+                .unwrap_or("https://api.stgn.jetbrainscloud.com".into()),
+        }
+    }
+
+    pub fn production() -> Self {
+        // Production configuration is the same as staging for now
+        Self {
+            agent_spawner_ws_url: "wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into(),
+            oauth_base_url: "https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into(),
+            jcp_api_url: "https://api.stgn.jetbrainscloud.com".into(),
+        }
+    }
 }
 
 #[cfg(test)]
