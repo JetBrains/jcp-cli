@@ -616,9 +616,9 @@ impl EnvConfig {
     pub fn production() -> Self {
         // Production configuration is the same as staging for now
         Self {
-            agent_spawner_ws_url: "wss://api.stgn.jetbrains.cloud/agent-spawner/acp".into(),
-            oauth_base_url: "https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into(),
-            jcp_api_url: "https://api.stgn.jetbrainscloud.com".into(),
+            agent_spawner_ws_url: "wss://api.jetbrains.cloud/agent-spawner/acp".into(),
+            oauth_base_url: "https://oauth.account.jetbrains.com/oauth2".into(),
+            jcp_api_url: "https://api.jetbrains.cloud".into(),
         }
     }
 }
