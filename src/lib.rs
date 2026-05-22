@@ -635,6 +635,18 @@ mod tests {
     use std::{fmt::Debug, io::Cursor};
 
     #[test]
+    fn check_unknown_fields_are_ignored() {
+        // we do not care about the result, just if unknown fields are ignored
+        serde_json::from_value::<GitRemoteInfo>(json!({
+            "branch": "main",
+            "url": "https://example.com/repo.git",
+            "revision": "18adf27d36912b2e255c71327146ac21116e232f",
+            "foo": "bar",
+        }))
+        .unwrap();
+    }
+
+    #[test]
     fn test_new_session_meta_deserialization() {
         check_serialization(
             json!({
