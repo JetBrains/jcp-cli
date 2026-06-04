@@ -14,19 +14,19 @@ Supported platforms:
 ## Homebrew (macOS)
 
 ```console
-$ brew install bazhenov/tap/jcp
+$ brew install jetbrains/utils/jcp
 ```
 
 ## Linux
 
 ```console
-$ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bazhenov/jcp-cli/releases/latest/download/jcp-installer.sh | sh
+$ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/JetBrains/jcp-cli/releases/latest/download/jcp-installer.sh | sh
 ```
 
 ## Windows
 
 ```console
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/bazhenov/jcp-cli/releases/latest/download/jcp-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/JetBrains/jcp-cli/releases/latest/download/jcp-installer.ps1 | iex"
 ```
 
 ## Building from sources

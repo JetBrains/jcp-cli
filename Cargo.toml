@@ -2,8 +2,8 @@
 name = "jcp"
 version = "0.6.0"
 edition = "2024"
-repository = "https://github.com/bazhenov/jcp-cli"
-homepage = "https://github.com/bazhenov/jcp-cli"
+repository = "https://github.com/JetBrains/jcp-cli"
+homepage = "https://github.com/JetBrains/jcp-cli"
 description = "JetBrains Cloud Platform CLI"
 default-run = "jcp"
 
