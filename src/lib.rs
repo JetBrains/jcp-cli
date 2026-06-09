@@ -1,13 +1,15 @@
 use agent_client_protocol::{
-    self as acp, AgentNotification, AgentSide, CLIENT_METHOD_NAMES, ClientRequest, ClientSide,
-    ContentBlock, ContentChunk, JsonRpcMessage, NewSessionRequest, Notification, OutgoingMessage,
-    PromptResponse, RawValue, Request, RequestId, Response, SessionId, SessionNotification,
-    SessionUpdate, Side, StopReason, TextContent,
+    self as acp, AgentNotification, ClientResponse, JsonRpcRequest,
+    schema::{
+        ContentBlock, ContentChunk, NewSessionRequest, Notification, PromptRequest, PromptResponse,
+        Request, RequestId, Response, SessionId, SessionNotification, SessionUpdate, StopReason,
+        TextContent,
+    },
 };
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use std::{collections::HashMap, env, io, path::Path, process::Command};
 use tokio::{
@@ -28,9 +30,6 @@ pub mod keychain;
 pub const AS_ACP_URL_ENV_NAME: &str = "AS_ACP_URL";
 pub const OAUTH_URL_ENV_NAME: &str = "OAUTH_URL";
 pub const JCP_API_URL_ENV_NAME: &str = "JCP_API_URL";
-
-pub type AgentOutgoingMessage = OutgoingMessage<AgentSide, ClientSide>;
-pub type ClientOutgoingMessage = OutgoingMessage<ClientSide, AgentSide>;
 
 /// A bidirectional transport for JSON-RPC messages.
 ///
@@ -242,31 +241,6 @@ pub struct GitRemoteInfo {
     pub revision: String,
 }
 
-/// Because ACP is a duplex protocol (requests can be initiated not only by a client, but also by a server)
-/// we can't use standard JSON RPC crates for working with transport messages. Those crates assumes that
-/// each party know what is expected (request/notification, response, error) when reading next message
-/// from a transport.
-///
-/// This is a JsonRpc payload messages that covers all 3 types of JSON-RPC messages:
-/// request/notification, response, error.
-#[derive(Debug, Deserialize)]
-pub struct RawIncomingMessage<'a> {
-    #[serde(rename = "id")]
-    pub id: Option<RequestId>,
-
-    #[serde(rename = "method")]
-    pub method: Option<&'a str>,
-
-    #[serde(rename = "params")]
-    pub params: Option<&'a RawValue>,
-
-    #[serde(rename = "result")]
-    pub result: Option<&'a RawValue>,
-
-    #[serde(rename = "error")]
-    pub error: Option<acp::Error>,
-}
-
 /// Adapter that bridges ACP client and JCP server communication.
 ///
 /// This struct processes messages from both channels using `tokio::select!`,
@@ -364,42 +338,30 @@ impl Adapter {
     async fn handle_agent_message(&mut self, msg: JsonValue) -> io::Result<()> {
         let _ = self.traffic_log.write(&msg).await;
 
-        let request_id = serde_json::from_value::<RequestId>(msg["id"].clone()).ok();
-
-        if let Some(request_id) = request_id
-            && msg["result"] != JsonValue::Null
-            && let Some(session_id) = self.prompt_request_mapping.remove(&request_id)
+        let prompt_response = serde_json::from_value::<Response<PromptResponse>>(msg.clone());
+        if let Ok(Response::Result { id, result }) = prompt_response
+            && let Some(session_id) = self.prompt_request_mapping.remove(&id)
         {
             // it is a response to a prompt request
-            let r = serde_json::from_value::<PromptResponse>(msg["result"].clone())
-                .map_err(to_io_invalid_data_err)?;
-            if r.stop_reason == StopReason::EndTurn
-                && let Some(meta) = r.meta
+            if result.stop_reason == StopReason::EndTurn
+                && let Some(meta) = result.meta
+                && let Ok(remote_info) =
+                    serde_json::from_value::<EndTurnMeta>(JsonValue::Object(meta))
+                && let Some(message) = git_end_turn_message(remote_info.target)
             {
-                let remote_info = serde_json::from_value::<EndTurnMeta>(JsonValue::Object(meta));
-                let end_turn_message = remote_info
-                    .ok()
-                    .map(|r| r.target)
-                    .and_then(git_end_turn_message);
-                if let Some(message) = end_turn_message {
-                    let notification = create_session_update_notification(session_id, message);
-                    let value =
-                        serde_json::to_value(&notification).map_err(to_io_invalid_data_err)?;
-                    self.client.send(value).await?;
-                }
+                let notification = create_session_update_notification(session_id, message);
+                let value = serde_json::to_value(&notification).map_err(to_io_invalid_data_err)?;
+                self.client.send(value).await?;
             }
         }
-
         self.client.send(msg).await
     }
 
     async fn handle_client_message(&mut self, msg: JsonValue) -> io::Result<()> {
         let _ = self.traffic_log.write(&msg).await;
-
-        match decode_acp_request::<AgentSide>(&msg) {
-            // ACP request handling
-            Ok(Some((id, method, mut request))) => {
-                if let ClientRequest::NewSessionRequest(r) = &mut request {
+        match decode_jrpc(msg.clone()) {
+            Ok(jrpc) => {
+                if let Ok(Some(mut r)) = decode_acp::<NewSessionRequest>(&jrpc) {
                     // Read git info from the session's working directory
                     //
                     // NOTE: we using blocking call in async context here. It will block current task.
@@ -412,53 +374,47 @@ impl Adapter {
                                 remote,
                                 ai_platform_token: self.ai_platform_token.clone(),
                             };
-                            inject_new_session_meta(r, &meta)?;
+                            r.meta = match serde_json::to_value(&meta) {
+                                Ok(JsonValue::Object(json)) => Some(json),
+                                _ => None,
+                            };
+                            let modified_request = Request {
+                                id: jrpc.id,
+                                method: jrpc.method,
+                                params: Some(r),
+                            };
+                            let modified_request = serde_json::to_value(modified_request)
+                                .map_err(to_io_invalid_data_err)?;
+                            self.agent.send(modified_request).await
                         }
                         Err(e) => {
-                            let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(
-                                Response::Error {
-                                    id: id.clone(),
-                                    error: acp::Error::new(
-                                        acp::ErrorCode::InvalidParams.into(),
-                                        e.to_string(),
-                                    ),
-                                },
-                            ));
+                            let msg = Response::<ClientResponse>::Error {
+                                id: jrpc.id,
+                                error: acp::Error::new(
+                                    acp::ErrorCode::InvalidParams.into(),
+                                    e.to_string(),
+                                ),
+                            };
                             let value =
                                 serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
-                            self.client.send(value).await?;
-                            return Ok(());
+                            self.client.send(value).await
                         }
                     }
-                } else if let ClientRequest::PromptRequest(r) = &request {
-                    self.prompt_request_mapping
-                        .insert(id.clone(), r.session_id.clone());
+                } else if let Ok(Some(r)) = decode_acp::<PromptRequest>(&jrpc) {
+                    self.prompt_request_mapping.insert(jrpc.id, r.session_id);
+                    self.agent.send(msg).await
+                } else {
+                    self.agent.send(msg).await
                 }
-
-                // Sending message to the server
-                let msg = JsonRpcMessage::wrap(ClientOutgoingMessage::Request(Request {
-                    id,
-                    method: method.into(),
-                    params: Some(request),
-                }));
-
-                let value = serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
-                self.agent.send(value).await?;
             }
-
-            // ACP notification handling
-            Ok(None) => self.agent.send(msg).await?,
-
             Err(e) => {
                 // message is a valid JSON, but it doesn't match our JSON-RPC/ACP protocol expectations.
                 // Forwarding message to the client to be as transparent as possible to minimize consequences
                 // if compatibility was broken
                 eprintln!("Unable to read ACP message: {e}");
-                self.agent.send(msg).await?;
+                self.agent.send(msg).await
             }
         }
-
-        Ok(())
     }
 
     /// Run the adapter until both channels are closed.
@@ -506,48 +462,47 @@ pub fn request_id(json_rpc: &JsonValue) -> Option<RequestId> {
     }
 }
 
-/// Reads [`RequestId`], method name and request itself from a JSON RPC request payload
-pub fn decode_acp_request<T: Side>(
-    json_rpc: &JsonValue,
-) -> Result<Option<(RequestId, String, T::InRequest)>, acp::Error> {
-    // This is an ugly hack, but we need to serialize here back to string, otherwise
-    // we can't use AgentSide::decode_request()
-    let msg_str = json_rpc.to_string();
-    match serde_json::from_str::<RawIncomingMessage>(&msg_str) {
-        Ok(rpc_msg) => {
-            if let Some((method, id)) = rpc_msg.method.zip(rpc_msg.id) {
-                Ok(Some((
-                    id,
-                    method.to_string(),
-                    T::decode_request(method, rpc_msg.params)?,
-                )))
-            } else {
-                // Not a request
-                Ok(None)
-            }
-        }
+pub fn decode_jrpc(json: JsonValue) -> Result<Request<JsonValue>, acp::Error> {
+    match serde_json::from_value(json) {
+        Ok(rpc_msg) => Ok(rpc_msg),
         Err(e) => Err(acp::Error::new(
-            acp::ErrorCode::ParseError.into(),
+            acp::ErrorCode::InvalidRequest.into(),
             e.to_string(),
         )),
+    }
+}
+
+/// Reads [`RequestId`], method name and request itself from a JSON RPC request payload.
+///
+/// Returns `Ok(None)` if it as a not JSON RPC request (notification or any other type of JSON payload).
+/// Fails with `Err()` if there is direct mention of method client interested in, but for some reason request can not
+/// be deserialized (missing required fields, etc.).
+pub fn decode_acp<T: JsonRpcRequest + DeserializeOwned>(
+    request: &Request<JsonValue>,
+) -> Result<Option<T>, acp::Error> {
+    // Checking if it is a method we're interested in
+    if T::matches_method(&request.method) {
+        T::parse_message(&request.method, &request.params).map(Some)
+    } else {
+        // Different ACP request
+        Ok(None)
     }
 }
 
 fn create_session_update_notification(
     session_id: SessionId,
     message: impl Into<String>,
-) -> JsonRpcMessage<AgentOutgoingMessage> {
-    JsonRpcMessage::wrap(AgentOutgoingMessage::Notification(Notification {
-        method: CLIENT_METHOD_NAMES.session_update.into(),
-        params: Some(AgentNotification::SessionNotification(
-            SessionNotification::new(
-                session_id,
-                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new(message),
-                ))),
-            ),
-        )),
-    }))
+) -> Notification<AgentNotification> {
+    let notification = AgentNotification::SessionNotification(SessionNotification::new(
+        session_id,
+        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+            message,
+        )))),
+    ));
+    Notification {
+        method: notification.method().into(),
+        params: Some(notification),
+    }
 }
 
 #[derive(Default)]
@@ -573,14 +528,6 @@ impl TrafficLog {
             Ok(())
         }
     }
-}
-
-/// JCP needs to know where to clone git repo from and what branch to use
-fn inject_new_session_meta(req: &mut NewSessionRequest, meta: &NewSessionMeta) -> io::Result<()> {
-    if let JsonValue::Object(json) = serde_json::to_value(meta).map_err(to_io_invalid_data_err)? {
-        req.meta = Some(json);
-    }
-    Ok(())
 }
 
 fn to_io_invalid_data_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) -> io::Error {
@@ -627,12 +574,14 @@ impl EnvConfig {
 mod tests {
     use super::*;
     use acp::{
-        AgentResponse, AgentSide, ClientRequest, LoadSessionRequest, LoadSessionResponse, Side,
+        AgentResponse, ClientRequest,
+        schema::{InitializeRequest, JsonRpcMessage, LoadSessionRequest, LoadSessionResponse},
     };
+    use agent_client_protocol::schema::AGENT_METHOD_NAMES;
     use drop_check::{IntersperceExt, cancellations};
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
-    use std::{fmt::Debug, io::Cursor};
+    use std::{fmt::Debug, io::Cursor, sync::Arc};
 
     #[test]
     fn check_unknown_fields_are_ignored() {
@@ -707,8 +656,47 @@ mod tests {
     }
 
     #[test]
-    fn json_rpc_request_can_be_deserialized_using_raw_request() {
-        let json = r#"{
+    fn json_rpc_new_session_request_can_be_deserialized() {
+        let json = json!({
+            "jsonrpc":"2.0",
+            "id":0,
+            "method":"session/new",
+            "params": {
+                "cwd": "/foo/bar",
+                "mcpServers": [],
+            }
+        });
+
+        let request = decode_jrpc(json)
+            .and_then(|jrpc| decode_acp::<NewSessionRequest>(&jrpc))
+            .unwrap()
+            .expect("Unable to read NewSessionRequest");
+
+        assert_eq!(request.cwd.as_path(), "/foo/bar");
+    }
+
+    /// We're using  low level JSON RPC types from agent-client-protocol crate
+    /// this test make sure that JsonRpcMessage properly serialize JSON RPC headers (eg. "jsonrpc":"2.0").
+    #[test]
+    fn json_rpc_new_session_request_can_be_serialized() {
+        let expected_json = json!({
+            "jsonrpc":"2.0",
+            "id":42,
+            "method":"methodName",
+            "params": [1, 2, 3]
+        });
+
+        let msg = JsonRpcMessage::wrap(Request {
+            id: RequestId::Number(42),
+            method: Arc::from("methodName"),
+            params: Some([1, 2, 3]),
+        });
+        assert_eq!(serde_json::to_value(msg).unwrap(), expected_json);
+    }
+
+    #[test]
+    fn json_rpc_initialize_request_can_be_deserialized() {
+        let json = json!({
             "jsonrpc":"2.0",
             "id":0,
             "method":"initialize",
@@ -721,18 +709,22 @@ mod tests {
                     },
                     "terminal":true,
                     "_meta": {},
-                    "clientInfo": {"name":"ide","title":"IDE","version":"0.1"}
-                }
+                },
+                "clientInfo": {"name":"ide","title":"IDE","version":"0.1"},
             }
-        }"#;
+        });
 
-        let raw_message: RawIncomingMessage = serde_json::from_str(json).unwrap();
-        let request =
-            AgentSide::decode_request(raw_message.method.unwrap(), raw_message.params).unwrap();
+        let request = decode_jrpc(json)
+            .and_then(|jrpc| decode_acp::<InitializeRequest>(&jrpc))
+            .unwrap()
+            .expect("Unable to read InitializeRequest");
 
-        if !matches!(request, ClientRequest::InitializeRequest(..)) {
-            panic!("Unexpected request: {:?}", request);
-        }
+        let info = request
+            .client_info
+            .expect("No IDE info is found in response");
+        assert_eq!(info.name, "ide");
+        assert_eq!(info.title.unwrap(), "IDE");
+        assert_eq!(info.version, "0.1");
     }
 
     #[test]
@@ -782,8 +774,15 @@ mod tests {
         const AGENT_MESSAGE_REPETITIONS: usize = 10;
 
         let client = {
-            let request = ClientRequest::LoadSessionRequest(LoadSessionRequest::new("1", "/"));
+            let request = Request {
+                id: RequestId::Number(1),
+                method: AGENT_METHOD_NAMES.session_load.into(),
+                params: Some(ClientRequest::LoadSessionRequest(LoadSessionRequest::new(
+                    "1", "/",
+                ))),
+            };
             let mut message = serde_json::to_string(&request).unwrap();
+            println!("msg - {message}");
             message.push('\n');
 
             IoTransport::new(
@@ -793,8 +792,11 @@ mod tests {
         };
 
         let agent = {
-            let request = AgentResponse::LoadSessionResponse(LoadSessionResponse::new());
-            let mut message = serde_json::to_string(&request).unwrap();
+            let json_rpc = Response::Result {
+                id: RequestId::Number(1),
+                result: AgentResponse::LoadSessionResponse(LoadSessionResponse::new()),
+            };
+            let mut message = serde_json::to_string(&json_rpc).unwrap();
             message.push('\n');
 
             IoTransport::new(

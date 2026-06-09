@@ -10,13 +10,15 @@
 //! to keep tests fast and reliable.
 
 use agent_client_protocol::{
-    AGENT_METHOD_NAMES, AgentResponse, CLIENT_METHOD_NAMES, ClientRequest, ContentBlock,
-    NewSessionRequest, PromptRequest, PromptResponse, SessionNotification, SessionUpdate,
-    StopReason, TextContent,
+    AgentResponse, ClientRequest,
+    schema::{
+        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, NewSessionRequest, PromptRequest,
+        PromptResponse, Request, SessionNotification, SessionUpdate, StopReason, TextContent,
+    },
 };
 use harness::{StubGitTool, TestHarness};
 use jcp::{EndTurnMeta, GitRemoteInfo, NewSessionMeta};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 mod harness;
 
@@ -126,9 +128,15 @@ fn invalid_messages_bypass() {
     harness.initialize();
     harness.new_session();
 
+    let jrpc_request = Request {
+        id: agent_client_protocol::schema::RequestId::Null,
+        method: "foo/bar".into(),
+        params: Some(json! { true }),
+    };
+    let expected_msg = serde_json::to_value(jrpc_request).unwrap();
+
     // Sending invalid JSON-RPC message from the client
     {
-        let expected_msg = Value::Bool(true);
         harness.client_send_json(expected_msg.clone());
 
         let agent_msg = harness.agent_recv();
@@ -137,7 +145,6 @@ fn invalid_messages_bypass() {
 
     // Sending invalid JSON-RPC message from the agent
     {
-        let expected_msg = Value::Array(vec![Value::String("reply".to_string())]);
         harness.agent_send_json(expected_msg.clone());
 
         let agent_msg = harness.client_recv();
