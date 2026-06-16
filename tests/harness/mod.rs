@@ -3,15 +3,15 @@
 //! Provides an API for testing without dealing with websocket setup, channels, and async coordination directly.
 
 use agent_client_protocol::{
-    self as acp, AgentResponse, ClientRequest, InitializeRequest, InitializeResponse,
-    JsonRpcMessage, NewSessionRequest, NewSessionResponse, ProtocolVersion, Request, RequestId,
-    Response, SessionId,
+    self as acp, AgentResponse, ClientRequest,
+    schema::{
+        InitializeRequest, InitializeResponse, JsonRpcMessage, NewSessionRequest,
+        NewSessionResponse, ProtocolVersion, Request, RequestId, Response, SessionId,
+    },
 };
 use async_trait::async_trait;
 use futures::FutureExt;
-use jcp::{
-    Adapter, AgentOutgoingMessage, ClientOutgoingMessage, GitRemoteInfo, GitTool, Transport,
-};
+use jcp::{Adapter, GitRemoteInfo, GitTool, Transport};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use std::{io, path::Path};
@@ -91,11 +91,11 @@ impl TestHarness {
         let id = RequestId::Number(self.next_request_id as i64);
         self.next_request_id += 1;
 
-        let msg = JsonRpcMessage::wrap(ClientOutgoingMessage::Request(Request {
+        let msg = JsonRpcMessage::wrap(Request {
             id: id.clone(),
             method: request.method().to_string().into(),
             params: Some(request),
-        }));
+        });
 
         let value = serde_json::to_value(&msg).unwrap();
         self.client_send_json(value);
@@ -152,10 +152,7 @@ impl TestHarness {
 
     /// Send a response from the Agent back to the Adapter.
     pub fn agent_reply(&mut self, id: RequestId, response: AgentResponse) {
-        let msg = JsonRpcMessage::wrap(AgentOutgoingMessage::Response(Response::new(
-            id,
-            Ok(response),
-        )));
+        let msg = JsonRpcMessage::wrap(Response::new(id, Ok(response)));
 
         let value = serde_json::to_value(&msg).unwrap();
         self.agent_send_json(value)
@@ -273,7 +270,7 @@ impl JRpcMessage {
 
 mod harness_test {
     use crate::harness::JRpcMessage;
-    use agent_client_protocol::{self as acp, RequestId};
+    use agent_client_protocol::{self as acp, schema::RequestId};
     use serde_json::json;
 
     #[test]

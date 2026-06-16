@@ -14,7 +14,7 @@ license = false
 eula = false
 
 [dependencies]
-agent-client-protocol = "0.9.3"
+agent-client-protocol = "0.14.0"
 dotenv = "0.15.0"
 futures = "0.3.31"
 futures-util = "0.3.31"

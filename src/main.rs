@@ -1,11 +1,14 @@
-use acp::{AgentSide, ClientRequest, ErrorCode, RequestId};
-use agent_client_protocol as acp;
+use acp::schema::rpc;
+use agent_client_protocol::{
+    self as acp, ErrorCode,
+    schema::{InitializeRequest, RequestId},
+};
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use jcp::{
     Adapter, EnvConfig, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
     auth::{self, AccessTokens, get_access_token, login},
-    decode_acp_request,
+    decode_acp, decode_jrpc,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
     request_id,
 };
@@ -99,7 +102,7 @@ fn run_adapter(keychain: Box<dyn SecretBackend>, env_config: &EnvConfig) {
             .recv()
             .await
             .expect("Unable to read message")
-            .expect("Unexpected EOF");
+            .expect("Unexpected EOF while reading InitializationRequest");
         let request_id = request_id(&init_msg).unwrap_or(RequestId::Null);
 
         match handshake_and_authenticate(&mut client, init_msg, keychain, env_config).await {
@@ -148,8 +151,8 @@ async fn handshake_and_authenticate(
     env_config: &EnvConfig,
 ) -> Result<(WebSocketTransport, AccessTokens), Error> {
     // Checking that this is indeed InitializeRequest
-    let Some((_, _, ClientRequest::InitializeRequest(_))) =
-        decode_acp_request::<AgentSide>(&initialize_request)?
+    let Some(_) = decode_jrpc(initialize_request.clone())
+        .and_then(|jrpc| decode_acp::<InitializeRequest>(&jrpc))?
     else {
         return Err(io::Error::other("InitializeRequest expected").into());
     };
@@ -279,6 +282,6 @@ fn create_json_rpc_error(
         e => e.to_string(),
     };
     let error = acp::Error::new(ErrorCode::InvalidRequest.into(), message);
-    let message = acp::Response::<()>::new(original_request_id, Err(error));
-    serde_json::to_value(acp::JsonRpcMessage::wrap(message))
+    let message = rpc::Response::<(), _>::new(original_request_id, Err(error));
+    serde_json::to_value(rpc::JsonRpcMessage::wrap(message))
 }
