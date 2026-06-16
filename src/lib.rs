@@ -474,7 +474,7 @@ pub fn decode_jrpc(json: JsonValue) -> Result<Request<JsonValue>, acp::Error> {
 
 /// Reads [`RequestId`], method name and request itself from a JSON RPC request payload.
 ///
-/// Returns `Ok(None)` if it as a not JSON RPC request (notification or any other type of JSON payload).
+/// Returns `Ok(None)` if it is not a JSON RPC request (notification or any other type of JSON payload).
 /// Fails with `Err()` if there is direct mention of method client interested in, but for some reason request can not
 /// be deserialized (missing required fields, etc.).
 pub fn decode_acp<T: JsonRpcRequest + DeserializeOwned>(
