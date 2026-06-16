@@ -23,7 +23,7 @@ use std::{
     path::PathBuf,
     process::Command,
     str::FromStr,
-    thread::{self},
+    thread,
 };
 use tempfile::tempdir;
 use tungstenite::{Message, Utf8Bytes, WebSocket, error::ProtocolError};
