@@ -98,13 +98,11 @@ fn run_adapter(keychain: Box<dyn SecretBackend>, env_config: &EnvConfig) {
 
         // Read the first message from the client in order to save request_id which we need to
         // properly report errors if they will happen
-        eprintln!("Hello");
         let init_msg = client
             .recv()
             .await
             .expect("Unable to read message")
             .expect("Unexpected EOF while reading InitializationRequest");
-        eprintln!("Done");
         let request_id = request_id(&init_msg).unwrap_or(RequestId::Null);
 
         match handshake_and_authenticate(&mut client, init_msg, keychain, env_config).await {
