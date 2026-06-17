@@ -1,7 +1,6 @@
-use acp::schema::rpc;
 use agent_client_protocol::{
     self as acp, ErrorCode,
-    schema::{InitializeRequest, RequestId},
+    schema::{InitializeRequest, RequestId, rpc},
 };
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
@@ -10,7 +9,7 @@ use jcp::{
     auth::{self, AccessTokens, get_access_token, login},
     decode_acp, decode_jrpc,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
-    request_id,
+    oneshot, request_id,
 };
 use serde_json::Value as JsonValue;
 use std::{env, io, process};
@@ -44,18 +43,22 @@ enum Commands {
 
     /// Run ACP adapter
     Acp,
+
+    #[command(hide = true)]
+    /// Oneshot prompt. This is for development/testing purposes only
+    OneShot { prompt: String },
 }
 
 fn main() {
     // We don't want to fail if we can't read .env for whatever reason
     let _ = dotenv();
 
-    let cli = Cli::parse();
+    let opts = Cli::parse();
     let keychain = keychain::active_keychain();
 
-    let env_config = read_env_config(&cli);
+    let env_config = read_env_config(&opts);
 
-    match cli.command {
+    match &opts.command {
         Commands::Login => {
             eprintln!("Starting authentication...");
             match login(&env_config) {
@@ -77,7 +80,28 @@ fn main() {
             eprintln!("Logout successful!");
         }
         Commands::Acp => run_adapter(keychain, &env_config),
+        Commands::OneShot { prompt } => {
+            if let Err(e) = run_one_shot(&opts, prompt) {
+                eprintln!("Agent failed: {}", e);
+                process::exit(1);
+            }
+        }
     }
+}
+
+fn run_one_shot(opts: &Cli, prompt: &str) -> Result<(), acp::Error> {
+    let program_path = env::current_exe().expect("Failed to get executable path");
+    let program_path = program_path.to_str().unwrap();
+
+    // To run agent we call ourselves with `acp` subcommand
+    let args: &[&str] = if opts.staging {
+        &[program_path, "--staging", "acp"]
+    } else {
+        &[program_path, "acp"]
+    };
+
+    let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+    runtime.block_on(async { oneshot::run(args, prompt).await })
 }
 
 fn run_adapter(keychain: Box<dyn SecretBackend>, env_config: &EnvConfig) {
