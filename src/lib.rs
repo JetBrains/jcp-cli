@@ -25,6 +25,7 @@ use tungstenite::{
 
 pub mod auth;
 pub mod keychain;
+pub mod oneshot;
 
 /// The name of the environment variable that defines the URL to the Agent Spawner ACP WebSocket API
 pub const AS_ACP_URL_ENV_NAME: &str = "AS_ACP_URL";
