@@ -133,6 +133,7 @@ impl<W: Write> ConversationPrinter<W> {
 
     pub fn print(&mut self, ty: ChunkType, s: &str) {
         if self.last_type != Some(ty) {
+            self.already_printed = 0;
             self.print_header(&ty);
         };
 
@@ -244,6 +245,15 @@ mod tests {
     fn wraps_lines_at_terminal_width() {
         let out = render(16, &[(ChunkType::Agent, "abcdef")]);
         assert_eq!(out, vec!["agent ▎abc", "▎def"]);
+    }
+
+    #[test]
+    fn wraps_lines_correctly_when_chunk_type_has_changed() {
+        let out = render(
+            16,
+            &[(ChunkType::Agent, "abc"), (ChunkType::Thought, "def")],
+        );
+        assert_eq!(out, vec!["agent ▎abc", "thought ▎def"]);
     }
 
     #[test]
