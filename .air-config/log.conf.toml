@@ -1,0 +1,40 @@
+# ## Default logger config
+#
+# This looks like toml file but is actually parsed with a very specialized regex so please adhere to this structure.
+#
+#
+# Refresh timeout in seconds. On timeout log configuration files will be re-read and re-applied
+#
+refresh = "30"
+
+# ## Logger levels
+#
+# Each logger (including root logger) can have
+# * common logging level <'all', 'level' or 'default', they are synonymous>
+# * per-appender logging level <e.g. 'console', 'file'>.
+#
+# Logger level is derived from the common logging level and appender levels as their minimum.
+# For example, is console=WARN and file=TRACE, the derived logger level will be TRACE so that TRACE events will be
+# captured and written to file appender.
+#
+# The common logging level (if present) is applied to all appenders which do not have their level defined explicitly.
+
+
+# Root logger config
+#
+# Common root logger level defines the level for all implicit loggers. For example, putting TRACE here will produce enormous amount
+# of logging from all loggers in the program.
+#
+all = "INFO"
+
+# Per-appender filter level. This will override all custom per-logger appender levels.
+# Use it to reduce the amount of written events globally without changing defined loggers.
+#
+console = "INFO"
+file = "INFO"
+
+# Loggers
+#
+[[logger]]
+name = "fleet.workspace.topology"
+console = "DEBUG"
