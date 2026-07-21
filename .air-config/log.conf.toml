@@ -25,13 +25,13 @@ refresh = "30"
 # Common root logger level defines the level for all implicit loggers. For example, putting TRACE here will produce enormous amount
 # of logging from all loggers in the program.
 #
-all = "INFO"
+all = "DEBUG"
 
 # Per-appender filter level. This will override all custom per-logger appender levels.
 # Use it to reduce the amount of written events globally without changing defined loggers.
 #
-console = "INFO"
-file = "INFO"
+console = "DEBUG"
+file = "DEBUG"
 
 # Loggers
 #
