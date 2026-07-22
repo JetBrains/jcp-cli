@@ -138,11 +138,13 @@ impl<W: Write> ConversationPrinter<W> {
         };
 
         let mut lines = s.lines();
-        self.print_line(lines.next().unwrap());
-        for chunk in lines {
-            self.print_empty_header();
-            self.already_printed = 0;
-            self.print_line(chunk);
+        if let Some(first_line) = lines.next() {
+            self.print_line(first_line);
+            for chunk in lines {
+                self.print_empty_header();
+                self.already_printed = 0;
+                self.print_line(chunk);
+            }
         }
 
         self.last_type = Some(ty);
@@ -225,6 +227,12 @@ mod tests {
     fn prints_header_with_right_aligned_type() {
         let out = render(120, &[(ChunkType::User, "hello")]);
         assert_eq!(out, vec!["user ▎hello"]);
+    }
+
+    #[test]
+    fn prints_empty_line() {
+        let out = render(120, &[(ChunkType::User, "")]);
+        assert_eq!(out, vec!["user ▎"]);
     }
 
     #[test]
