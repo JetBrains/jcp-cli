@@ -486,7 +486,7 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
     }
 }
 
-// Injects given struct as a `_meta` field into JSON RPC/ACP requesr
+// Injects given struct as a `_meta` field into JSON RPC/ACP request
 fn inject_meta<M: Serialize>(meta: M, mut request: Request<JsonValue>) -> io::Result<JsonValue> {
     if let Some(params) = request.params.as_mut() {
         let new_meta = serde_json::to_value(&meta).map_err(to_io_invalid_data_err)?;
