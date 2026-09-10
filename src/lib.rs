@@ -1,9 +1,9 @@
 use agent_client_protocol::{
     self as acp, AgentNotification, ClientResponse, JsonRpcRequest,
     schema::{
-        ContentBlock, ContentChunk, NewSessionRequest, Notification, PromptRequest, PromptResponse,
-        Request, RequestId, Response, SessionId, SessionNotification, SessionUpdate, StopReason,
-        TextContent,
+        ContentBlock, ContentChunk, LoadSessionRequest, NewSessionRequest, Notification,
+        PromptRequest, PromptResponse, Request, RequestId, Response, ResumeSessionRequest,
+        SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
     },
 };
 use async_trait::async_trait;
@@ -224,6 +224,17 @@ pub struct NewSessionMeta {
     pub ai_platform_token: Option<String>,
 }
 
+/// Describes meta information that holds JCP access token that is need to work with infrastructure
+/// (create VMs etc.). It needs to be injected into 3 following ACP-request:
+/// - `session/prompt`
+/// - `session/resume`
+/// - `session/load`
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct JcpMeta {
+    #[serde(rename = "jcpToken")]
+    pub jcp_token: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct EndTurnMeta {
     #[serde(rename = "target")]
@@ -251,6 +262,7 @@ pub struct Adapter {
     client: Box<dyn Transport>,
     agent: Box<dyn Transport>,
     ai_platform_token: Option<String>,
+    jcp_token: Option<String>,
     traffic_log: TrafficLog,
 
     /// Mapping from prompt request id to session id
@@ -280,6 +292,7 @@ impl Adapter {
             traffic_log: TrafficLog::default(),
             prompt_request_mapping: HashMap::new(),
             ai_platform_token: None,
+            jcp_token: None,
         }
     }
 
@@ -288,6 +301,10 @@ impl Adapter {
     /// AI Platform token is issued by Agent Spawner automatically, but for development purposes might be overridden
     pub fn set_ai_platform_token(&mut self, token: Option<String>) {
         self.ai_platform_token = token;
+    }
+
+    pub fn set_jcp_token(&mut self, token: impl Into<String>) {
+        self.jcp_token = Some(token.into());
     }
 
     pub fn set_traffic_log(&mut self, traffic_log: TrafficLog) {
@@ -402,8 +419,35 @@ impl Adapter {
                         }
                     }
                 } else if let Ok(Some(r)) = decode_acp::<PromptRequest>(&jrpc) {
-                    self.prompt_request_mapping.insert(jrpc.id, r.session_id);
-                    self.agent.send(msg).await
+                    self.prompt_request_mapping
+                        .insert(jrpc.id.clone(), r.session_id.clone());
+
+                    if let Some(jcp_token) = &self.jcp_token {
+                        let meta = JcpMeta {
+                            jcp_token: jcp_token.to_string(),
+                        };
+                        self.agent.send(inject_meta(meta, jrpc)?).await
+                    } else {
+                        self.agent.send(msg).await
+                    }
+                } else if let Ok(Some(_)) = decode_acp::<LoadSessionRequest>(&jrpc) {
+                    if let Some(jcp_token) = &self.jcp_token {
+                        let meta = JcpMeta {
+                            jcp_token: jcp_token.to_string(),
+                        };
+                        self.agent.send(inject_meta(meta, jrpc)?).await
+                    } else {
+                        self.agent.send(msg).await
+                    }
+                } else if let Ok(Some(_)) = decode_acp::<ResumeSessionRequest>(&jrpc) {
+                    if let Some(jcp_token) = &self.jcp_token {
+                        let meta = JcpMeta {
+                            jcp_token: jcp_token.to_string(),
+                        };
+                        self.agent.send(inject_meta(meta, jrpc)?).await
+                    } else {
+                        self.agent.send(msg).await
+                    }
                 } else {
                     self.agent.send(msg).await
                 }
@@ -451,6 +495,19 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
     } else {
         None
     }
+}
+
+// Injects given struct as a `_meta` field into JSON RPC/ACP requesr
+fn inject_meta<M: Serialize>(meta: M, mut request: Request<JsonValue>) -> io::Result<JsonValue> {
+    if let Some(params) = request.params.as_mut() {
+        let new_meta = serde_json::to_value(&meta).map_err(to_io_invalid_data_err)?;
+        if let JsonValue::Object(meta) = new_meta
+            && let JsonValue::Object(r) = params
+        {
+            r.insert("_meta".into(), JsonValue::Object(meta));
+        }
+    }
+    serde_json::to_value(request).map_err(to_io_invalid_data_err)
 }
 
 /// Reads [`RequestId`] from a JSON RPC payload and returns if any

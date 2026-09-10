@@ -84,6 +84,10 @@ impl TestHarness {
         }
     }
 
+    pub fn adapter(&mut self) -> &mut Adapter {
+        &mut self.adapter
+    }
+
     /// Send a request from the client to the adapter.
     ///
     /// This simulates a client (IDE) sending a JSON-RPC request via stdin.

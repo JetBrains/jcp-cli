@@ -9,15 +9,19 @@
 //! If this is the case, it is possible to use `#[tokio::test]`, but additional caution needs to be taken
 //! to keep tests fast and reliable.
 
+use std::path::PathBuf;
+
 use agent_client_protocol::{
     AgentResponse, ClientRequest,
     schema::{
-        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, NewSessionRequest, PromptRequest,
-        PromptResponse, Request, SessionNotification, SessionUpdate, StopReason, TextContent,
+        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest, Meta,
+        NewSessionRequest, PromptRequest, PromptResponse, Request, ResumeSessionRequest,
+        SessionNotification, SessionUpdate, StopReason, TextContent,
     },
 };
 use harness::{StubGitTool, TestHarness};
-use jcp::{EndTurnMeta, GitRemoteInfo, NewSessionMeta};
+use jcp::{EndTurnMeta, GitRemoteInfo, JcpMeta, NewSessionMeta};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 mod harness;
@@ -57,6 +61,70 @@ fn test_adapter_injects_meta_into_new_session_request() {
         .expect("meta should be valid");
 
     assert_eq!(meta, Some(expected_meta));
+}
+
+#[test]
+fn should_inject_jcp_token_into_prompt() {
+    let mut harness = test_harness();
+    let jcp_token = "expected-token".to_string();
+    harness.adapter().set_jcp_token(&jcp_token);
+
+    harness.client_send(ClientRequest::PromptRequest(PromptRequest::new(
+        "sessId",
+        vec!["Hello".into()],
+    )));
+
+    let (_, _, req) = harness.agent_recv().expect_request::<PromptRequest>();
+    let meta = req
+        .meta
+        .map(read_meta_as::<JcpMeta>)
+        .transpose()
+        .expect("meta should be valid");
+
+    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+}
+
+#[test]
+fn should_inject_jcp_token_into_load() {
+    let mut harness = test_harness();
+    let jcp_token = "expected-token".to_string();
+    harness.adapter().set_jcp_token(&jcp_token);
+
+    harness.client_send(ClientRequest::LoadSessionRequest(LoadSessionRequest::new(
+        "sess-id".to_string(),
+        PathBuf::from("/root"),
+    )));
+
+    let (_, _, req) = harness.agent_recv().expect_request::<LoadSessionRequest>();
+    let meta = req
+        .meta
+        .map(read_meta_as::<JcpMeta>)
+        .transpose()
+        .expect("meta should be valid");
+
+    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+}
+
+#[test]
+fn should_inject_jcp_token_into_resume() {
+    let mut harness = test_harness();
+    let jcp_token = "expected-token".to_string();
+    harness.adapter().set_jcp_token(&jcp_token);
+
+    harness.client_send(ClientRequest::ResumeSessionRequest(
+        ResumeSessionRequest::new("sess-id".to_string(), PathBuf::from("/root")),
+    ));
+
+    let (_, _, req) = harness
+        .agent_recv()
+        .expect_request::<ResumeSessionRequest>();
+    let meta = req
+        .meta
+        .map(read_meta_as::<JcpMeta>)
+        .transpose()
+        .expect("meta should be valid");
+
+    assert_eq!(meta, Some(JcpMeta { jcp_token }));
 }
 
 #[test]
@@ -150,6 +218,10 @@ fn invalid_messages_bypass() {
         let agent_msg = harness.client_recv();
         assert_eq!(agent_msg.0, expected_msg);
     }
+}
+
+fn read_meta_as<T: DeserializeOwned>(meta: Meta) -> serde_json::Result<T> {
+    serde_json::from_value(serde_json::Value::Object(meta))
 }
 
 fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
