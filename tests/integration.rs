@@ -42,7 +42,7 @@ fn test_adapter_injects_meta_into_new_session_request() {
         ai_platform_token: None,
     };
     let git_tool = StubGitTool(remote_info);
-    let mut harness = TestHarness::new(git_tool);
+    let mut harness = TestHarness::new(git_tool, "");
 
     // Client sends newSession request (without meta)
     let request_id = harness.client_send(ClientRequest::NewSessionRequest(NewSessionRequest::new(
@@ -237,5 +237,5 @@ fn test_harness() -> TestHarness {
         branch: TEST_BRANCH.into(),
         revision: TEST_REVISION.into(),
     });
-    TestHarness::new(git_tool)
+    TestHarness::new(git_tool, "")
 }

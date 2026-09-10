@@ -262,7 +262,7 @@ pub struct Adapter {
     client: Box<dyn Transport>,
     agent: Box<dyn Transport>,
     ai_platform_token: Option<String>,
-    jcp_token: Option<String>,
+    jcp_token: String,
     traffic_log: TrafficLog,
 
     /// Mapping from prompt request id to session id
@@ -284,6 +284,7 @@ impl Adapter {
         client: Box<dyn Transport>,
         agent: Box<dyn Transport>,
         git_tool: Box<dyn GitTool>,
+        jcp_token: impl Into<String>,
     ) -> Self {
         Self {
             client,
@@ -292,7 +293,7 @@ impl Adapter {
             traffic_log: TrafficLog::default(),
             prompt_request_mapping: HashMap::new(),
             ai_platform_token: None,
-            jcp_token: None,
+            jcp_token: jcp_token.into(),
         }
     }
 
@@ -304,7 +305,7 @@ impl Adapter {
     }
 
     pub fn set_jcp_token(&mut self, token: impl Into<String>) {
-        self.jcp_token = Some(token.into());
+        self.jcp_token = token.into();
     }
 
     pub fn set_traffic_log(&mut self, traffic_log: TrafficLog) {
@@ -422,32 +423,20 @@ impl Adapter {
                     self.prompt_request_mapping
                         .insert(jrpc.id.clone(), r.session_id.clone());
 
-                    if let Some(jcp_token) = &self.jcp_token {
-                        let meta = JcpMeta {
-                            jcp_token: jcp_token.to_string(),
-                        };
-                        self.agent.send(inject_meta(meta, jrpc)?).await
-                    } else {
-                        self.agent.send(msg).await
-                    }
+                    let meta = JcpMeta {
+                        jcp_token: self.jcp_token.to_string(),
+                    };
+                    self.agent.send(inject_meta(meta, jrpc)?).await
                 } else if let Ok(Some(_)) = decode_acp::<LoadSessionRequest>(&jrpc) {
-                    if let Some(jcp_token) = &self.jcp_token {
-                        let meta = JcpMeta {
-                            jcp_token: jcp_token.to_string(),
-                        };
-                        self.agent.send(inject_meta(meta, jrpc)?).await
-                    } else {
-                        self.agent.send(msg).await
-                    }
+                    let meta = JcpMeta {
+                        jcp_token: self.jcp_token.to_string(),
+                    };
+                    self.agent.send(inject_meta(meta, jrpc)?).await
                 } else if let Ok(Some(_)) = decode_acp::<ResumeSessionRequest>(&jrpc) {
-                    if let Some(jcp_token) = &self.jcp_token {
-                        let meta = JcpMeta {
-                            jcp_token: jcp_token.to_string(),
-                        };
-                        self.agent.send(inject_meta(meta, jrpc)?).await
-                    } else {
-                        self.agent.send(msg).await
-                    }
+                    let meta = JcpMeta {
+                        jcp_token: self.jcp_token.to_string(),
+                    };
+                    self.agent.send(inject_meta(meta, jrpc)?).await
                 } else {
                     self.agent.send(msg).await
                 }
@@ -863,7 +852,8 @@ mod tests {
             )
         };
 
-        let mut adapter = Adapter::new(Box::new(client), Box::new(agent), Box::new(NullGitTool));
+        let mut adapter =
+            Adapter::new(Box::new(client), Box::new(agent), Box::new(NullGitTool), "");
 
         let mut i = 0;
         while adapter.handle_next_message().await.unwrap() {

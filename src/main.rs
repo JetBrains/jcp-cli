@@ -132,8 +132,12 @@ fn run_adapter(keychain: Box<dyn SecretBackend>, env_config: &EnvConfig) {
         match handshake_and_authenticate(&mut client, init_msg, keychain, env_config).await {
             Ok((uplink, tokens)) => {
                 // Run the adapter for the remainder of the session
-                let mut adapter =
-                    Adapter::new(Box::new(client), Box::new(uplink), Box::new(GitCommandTool));
+                let mut adapter = Adapter::new(
+                    Box::new(client),
+                    Box::new(uplink),
+                    Box::new(GitCommandTool),
+                    tokens.jcp_access_token,
+                );
                 adapter.set_ai_platform_token(tokens.ai_access_token);
                 match traffic_log {
                     Ok(log) => adapter.set_traffic_log(log),
