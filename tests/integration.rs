@@ -14,14 +14,13 @@ use std::path::PathBuf;
 use agent_client_protocol::{
     AgentResponse, ClientRequest,
     schema::{
-        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest, Meta,
+        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest,
         NewSessionRequest, PromptRequest, PromptResponse, Request, ResumeSessionRequest,
         SessionNotification, SessionUpdate, StopReason, TextContent,
     },
 };
 use harness::{StubGitTool, TestHarness};
-use jcp::{EndTurnMeta, GitRemoteInfo, JcpMeta, NewSessionMeta};
-use serde::de::DeserializeOwned;
+use jcp::{EndTurnMeta, GitRemoteInfo, JcpToken, MetaField, NewSessionMeta};
 use serde_json::{Value, json};
 
 mod harness;
@@ -75,13 +74,8 @@ fn should_inject_jcp_token_into_prompt() {
     )));
 
     let (_, _, req) = harness.agent_recv().expect_request::<PromptRequest>();
-    let meta = req
-        .meta
-        .map(read_meta_as::<JcpMeta>)
-        .transpose()
-        .expect("meta should be valid");
-
-    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+    let meta = Value::Object(req.meta.expect("meta should be valid"));
+    assert_eq!(meta, json!({JcpToken::FIELD_NAME: jcp_token}));
 }
 
 #[test]
@@ -96,13 +90,8 @@ fn should_inject_jcp_token_into_load() {
     )));
 
     let (_, _, req) = harness.agent_recv().expect_request::<LoadSessionRequest>();
-    let meta = req
-        .meta
-        .map(read_meta_as::<JcpMeta>)
-        .transpose()
-        .expect("meta should be valid");
-
-    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+    let meta = Value::Object(req.meta.expect("meta should be valid"));
+    assert_eq!(meta, json!({JcpToken::FIELD_NAME: jcp_token}));
 }
 
 #[test]
@@ -118,13 +107,8 @@ fn should_inject_jcp_token_into_resume() {
     let (_, _, req) = harness
         .agent_recv()
         .expect_request::<ResumeSessionRequest>();
-    let meta = req
-        .meta
-        .map(read_meta_as::<JcpMeta>)
-        .transpose()
-        .expect("meta should be valid");
-
-    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+    let meta = Value::Object(req.meta.expect("meta should be valid"));
+    assert_eq!(meta, json!({JcpToken::FIELD_NAME: jcp_token}));
 }
 
 #[test]
@@ -218,10 +202,6 @@ fn invalid_messages_bypass() {
         let agent_msg = harness.client_recv();
         assert_eq!(agent_msg.0, expected_msg);
     }
-}
-
-fn read_meta_as<T: DeserializeOwned>(meta: Meta) -> serde_json::Result<T> {
-    serde_json::from_value(serde_json::Value::Object(meta))
 }
 
 fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {

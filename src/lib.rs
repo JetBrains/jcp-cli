@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value as JsonValue;
+use serde_json::{Map, Value as JsonValue};
 use std::{collections::HashMap, env, io, path::Path, process::Command};
 use tokio::{
     fs::File,
@@ -214,6 +214,24 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, io::Error> {
     }
 }
 
+/// Describes a ACP `_meta` field that can be injected or read from ACP request
+pub trait MetaField: Serialize + DeserializeOwned {
+    /// The name of json field name under `_meta` object
+    const FIELD_NAME: &str;
+}
+
+/// Describes meta information that holds JCP access token that is need to work with infrastructure
+/// (create VMs etc.). It needs to be injected into 3 following ACP-request:
+/// - `session/prompt`
+/// - `session/resume`
+/// - `session/load`
+#[derive(Serialize, Deserialize)]
+pub struct JcpToken(String);
+
+impl MetaField for JcpToken {
+    const FIELD_NAME: &str = "jcpToken";
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct NewSessionMeta {
     #[serde(rename = "remote")]
@@ -222,17 +240,6 @@ pub struct NewSessionMeta {
     #[serde(rename = "jbAiToken")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_platform_token: Option<String>,
-}
-
-/// Describes meta information that holds JCP access token that is need to work with infrastructure
-/// (create VMs etc.). It needs to be injected into 3 following ACP-request:
-/// - `session/prompt`
-/// - `session/resume`
-/// - `session/load`
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct JcpMeta {
-    #[serde(rename = "jcpToken")]
-    pub jcp_token: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -423,20 +430,14 @@ impl Adapter {
                     self.prompt_request_mapping
                         .insert(jrpc.id.clone(), r.session_id.clone());
 
-                    let meta = JcpMeta {
-                        jcp_token: self.jcp_token.to_string(),
-                    };
-                    self.agent.send(inject_meta(meta, jrpc)?).await
+                    let jcp_token = JcpToken(self.jcp_token.to_string());
+                    self.agent.send(inject_meta(jcp_token, jrpc)?).await
                 } else if let Ok(Some(_)) = decode_acp::<LoadSessionRequest>(&jrpc) {
-                    let meta = JcpMeta {
-                        jcp_token: self.jcp_token.to_string(),
-                    };
-                    self.agent.send(inject_meta(meta, jrpc)?).await
+                    let jcp_token = JcpToken(self.jcp_token.to_string());
+                    self.agent.send(inject_meta(jcp_token, jrpc)?).await
                 } else if let Ok(Some(_)) = decode_acp::<ResumeSessionRequest>(&jrpc) {
-                    let meta = JcpMeta {
-                        jcp_token: self.jcp_token.to_string(),
-                    };
-                    self.agent.send(inject_meta(meta, jrpc)?).await
+                    let jcp_token = JcpToken(self.jcp_token.to_string());
+                    self.agent.send(inject_meta(jcp_token, jrpc)?).await
                 } else {
                     self.agent.send(msg).await
                 }
@@ -487,13 +488,18 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
 }
 
 // Injects given struct as a `_meta` field into JSON RPC/ACP request
-fn inject_meta<M: Serialize>(meta: M, mut request: Request<JsonValue>) -> io::Result<JsonValue> {
+fn inject_meta<M: MetaField>(meta: M, mut request: Request<JsonValue>) -> io::Result<JsonValue> {
     if let Some(params) = request.params.as_mut() {
-        let new_meta = serde_json::to_value(&meta).map_err(to_io_invalid_data_err)?;
-        if let JsonValue::Object(meta) = new_meta
-            && let JsonValue::Object(r) = params
-        {
-            r.insert("_meta".into(), JsonValue::Object(meta));
+        let meta_key = serde_json::to_value(&meta).map_err(to_io_invalid_data_err)?;
+        let JsonValue::Object(request) = params else {
+            return Err(io::Error::other("ACP JSON Request is not a JSON object"));
+        };
+        let meta = request
+            .entry("_meta")
+            .or_insert(JsonValue::Object(Map::new()))
+            .as_object_mut();
+        if let Some(meta) = meta {
+            meta.insert(M::FIELD_NAME.into(), meta_key);
         }
     }
     serde_json::to_value(request).map_err(to_io_invalid_data_err)
