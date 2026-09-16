@@ -232,14 +232,11 @@ impl MetaField for JcpToken {
     const FIELD_NAME: &str = "jcpToken";
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct NewSessionMeta {
-    #[serde(rename = "remote")]
-    pub remote: GitRemoteInfo,
+#[derive(Serialize, Deserialize)]
+pub struct JbAiLegacyToken(String);
 
-    #[serde(rename = "jbAiToken")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ai_platform_token: Option<String>,
+impl MetaField for JbAiLegacyToken {
+    const FIELD_NAME: &str = "jbAiToken";
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -258,6 +255,10 @@ pub struct GitRemoteInfo {
 
     #[serde(rename = "revision")]
     pub revision: String,
+}
+
+impl MetaField for GitRemoteInfo {
+    const FIELD_NAME: &str = "remote";
 }
 
 /// Adapter that bridges ACP client and JCP server communication.
@@ -386,8 +387,8 @@ impl Adapter {
     async fn handle_client_message(&mut self, msg: JsonValue) -> io::Result<()> {
         let _ = self.traffic_log.write(&msg).await;
         match decode_jrpc(msg.clone()) {
-            Ok(jrpc) => {
-                if let Ok(Some(mut r)) = decode_acp::<NewSessionRequest>(&jrpc) {
+            Ok(mut jrpc) => {
+                if let Ok(Some(r)) = decode_acp::<NewSessionRequest>(&jrpc) {
                     // Read git info from the session's working directory
                     //
                     // NOTE: we using blocking call in async context here. It will block current task.
@@ -396,21 +397,12 @@ impl Adapter {
                     // multiplexed implementation where different sessions are processed independently.
                     match self.git_tool.read_remote_info(&r.cwd) {
                         Ok(remote) => {
-                            let meta = NewSessionMeta {
-                                remote,
-                                ai_platform_token: self.ai_platform_token.clone(),
+                            inject_meta(remote, &mut jrpc)?;
+                            if let Some(jb_ai_token) = &self.ai_platform_token {
+                                inject_meta(JbAiLegacyToken(jb_ai_token.clone()), &mut jrpc)?
                             };
-                            r.meta = match serde_json::to_value(&meta) {
-                                Ok(JsonValue::Object(json)) => Some(json),
-                                _ => None,
-                            };
-                            let modified_request = Request {
-                                id: jrpc.id,
-                                method: jrpc.method,
-                                params: Some(r),
-                            };
-                            let modified_request = serde_json::to_value(modified_request)
-                                .map_err(to_io_invalid_data_err)?;
+                            let modified_request =
+                                serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
                             self.agent.send(modified_request).await
                         }
                         Err(e) => {
@@ -430,14 +422,20 @@ impl Adapter {
                     self.prompt_request_mapping
                         .insert(jrpc.id.clone(), r.session_id.clone());
 
-                    let jcp_token = JcpToken(self.jcp_token.to_string());
-                    self.agent.send(inject_meta(jcp_token, jrpc)?).await
+                    self.inject_auth_tokens(&mut jrpc)?;
+                    let modified_request =
+                        serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
+                    self.agent.send(modified_request).await
                 } else if let Ok(Some(_)) = decode_acp::<LoadSessionRequest>(&jrpc) {
-                    let jcp_token = JcpToken(self.jcp_token.to_string());
-                    self.agent.send(inject_meta(jcp_token, jrpc)?).await
+                    self.inject_auth_tokens(&mut jrpc)?;
+                    let modified_request =
+                        serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
+                    self.agent.send(modified_request).await
                 } else if let Ok(Some(_)) = decode_acp::<ResumeSessionRequest>(&jrpc) {
-                    let jcp_token = JcpToken(self.jcp_token.to_string());
-                    self.agent.send(inject_meta(jcp_token, jrpc)?).await
+                    self.inject_auth_tokens(&mut jrpc)?;
+                    let modified_request =
+                        serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
+                    self.agent.send(modified_request).await
                 } else {
                     self.agent.send(msg).await
                 }
@@ -450,6 +448,15 @@ impl Adapter {
                 self.agent.send(msg).await
             }
         }
+    }
+
+    fn inject_auth_tokens(&mut self, jrpc: &mut Request<JsonValue>) -> io::Result<()> {
+        if let Some(ai_token) = &self.ai_platform_token {
+            // Injecting JB AI token for backward compatibility reasons
+            inject_meta(JbAiLegacyToken(ai_token.clone()), jrpc)?;
+        }
+        inject_meta(JcpToken(self.jcp_token.to_string()), jrpc)?;
+        Ok(())
     }
 
     /// Run the adapter until both channels are closed.
@@ -488,7 +495,7 @@ fn git_end_turn_message(git_info: GitRemoteInfo) -> Option<String> {
 }
 
 // Injects given struct as a `_meta` field into JSON RPC/ACP request
-fn inject_meta<M: MetaField>(meta: M, mut request: Request<JsonValue>) -> io::Result<JsonValue> {
+fn inject_meta<M: MetaField>(meta: M, request: &mut Request<JsonValue>) -> io::Result<()> {
     if let Some(params) = request.params.as_mut() {
         let meta_key = serde_json::to_value(&meta).map_err(to_io_invalid_data_err)?;
         let JsonValue::Object(request) = params else {
@@ -502,7 +509,7 @@ fn inject_meta<M: MetaField>(meta: M, mut request: Request<JsonValue>) -> io::Re
             meta.insert(M::FIELD_NAME.into(), meta_key);
         }
     }
-    serde_json::to_value(request).map_err(to_io_invalid_data_err)
+    Ok(())
 }
 
 /// Reads [`RequestId`] from a JSON RPC payload and returns if any
@@ -652,38 +659,14 @@ mod tests {
     fn test_new_session_meta_deserialization() {
         check_serialization(
             json!({
-                "remote": {
-                    "branch": "main",
-                    "url": "https://example.com/repo.git",
-                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
-                },
-                "jbAiToken": "test_token",
+                "branch": "main",
+                "url": "https://example.com/repo.git",
+                "revision": "18adf27d36912b2e255c71327146ac21116e232f"
             }),
-            NewSessionMeta {
-                remote: GitRemoteInfo {
-                    branch: "main".to_string(),
-                    url: "https://example.com/repo.git".to_string(),
-                    revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
-                },
-                ai_platform_token: Some("test_token".to_string()),
-            },
-        );
-
-        check_serialization(
-            json!({
-                "remote": {
-                    "branch": "main",
-                    "url": "https://example.com/repo.git",
-                    "revision": "18adf27d36912b2e255c71327146ac21116e232f"
-                },
-            }),
-            NewSessionMeta {
-                remote: GitRemoteInfo {
-                    branch: "main".to_string(),
-                    url: "https://example.com/repo.git".to_string(),
-                    revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
-                },
-                ai_platform_token: None,
+            GitRemoteInfo {
+                branch: "main".to_string(),
+                url: "https://example.com/repo.git".to_string(),
+                revision: "18adf27d36912b2e255c71327146ac21116e232f".to_string(),
             },
         );
     }
