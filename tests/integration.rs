@@ -14,14 +14,13 @@ use std::path::PathBuf;
 use agent_client_protocol::{
     AgentResponse, ClientRequest,
     schema::{
-        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest, Meta,
+        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest,
         NewSessionRequest, PromptRequest, PromptResponse, Request, ResumeSessionRequest,
         SessionNotification, SessionUpdate, StopReason, TextContent,
     },
 };
 use harness::{StubGitTool, TestHarness};
-use jcp::{EndTurnMeta, GitRemoteInfo, JcpMeta, NewSessionMeta};
-use serde::de::DeserializeOwned;
+use jcp::{EndTurnMeta, GitRemoteInfo, JbAiLegacyToken, JcpToken, MetaField};
 use serde_json::{Value, json};
 
 mod harness;
@@ -37,11 +36,7 @@ fn test_adapter_injects_meta_into_new_session_request() {
         url: TEST_GIT_URL.into(),
         revision: TEST_REVISION.into(),
     };
-    let expected_meta = NewSessionMeta {
-        remote: remote_info.clone(),
-        ai_platform_token: None,
-    };
-    let git_tool = StubGitTool(remote_info);
+    let git_tool = StubGitTool(remote_info.clone());
     let mut harness = TestHarness::new(git_tool, "");
 
     // Client sends newSession request (without meta)
@@ -56,18 +51,30 @@ fn test_adapter_injects_meta_into_new_session_request() {
 
     let meta = received
         .meta
-        .map(|m| serde_json::from_value::<NewSessionMeta>(serde_json::Value::Object(m)))
-        .transpose()
+        .map(Value::Object)
         .expect("meta should be valid");
 
-    assert_eq!(meta, Some(expected_meta));
+    assert_eq!(
+        meta,
+        json!({
+            "remote": {
+                "branch": &remote_info.branch,
+                "url": &remote_info.url,
+                "revision": &remote_info.revision,
+            }
+        })
+    );
 }
 
 #[test]
 fn should_inject_jcp_token_into_prompt() {
     let mut harness = test_harness();
-    let jcp_token = "expected-token".to_string();
+    let jcp_token = "expected-jcp-token".to_string();
+    let jb_ai_token = "expected-ai-token".to_string();
     harness.adapter().set_jcp_token(&jcp_token);
+    harness
+        .adapter()
+        .set_ai_platform_token(Some(jb_ai_token.clone()));
 
     harness.client_send(ClientRequest::PromptRequest(PromptRequest::new(
         "sessId",
@@ -75,13 +82,14 @@ fn should_inject_jcp_token_into_prompt() {
     )));
 
     let (_, _, req) = harness.agent_recv().expect_request::<PromptRequest>();
-    let meta = req
-        .meta
-        .map(read_meta_as::<JcpMeta>)
-        .transpose()
-        .expect("meta should be valid");
-
-    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+    let meta = req.meta.map(Value::Object).expect("meta should be valid");
+    assert_eq!(
+        meta,
+        json!({
+            JcpToken::FIELD_NAME: jcp_token,
+            JbAiLegacyToken::FIELD_NAME: jb_ai_token,
+        })
+    );
 }
 
 #[test]
@@ -96,13 +104,8 @@ fn should_inject_jcp_token_into_load() {
     )));
 
     let (_, _, req) = harness.agent_recv().expect_request::<LoadSessionRequest>();
-    let meta = req
-        .meta
-        .map(read_meta_as::<JcpMeta>)
-        .transpose()
-        .expect("meta should be valid");
-
-    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+    let meta = Value::Object(req.meta.expect("meta should be valid"));
+    assert_eq!(meta, json!({JcpToken::FIELD_NAME: jcp_token}));
 }
 
 #[test]
@@ -118,13 +121,8 @@ fn should_inject_jcp_token_into_resume() {
     let (_, _, req) = harness
         .agent_recv()
         .expect_request::<ResumeSessionRequest>();
-    let meta = req
-        .meta
-        .map(read_meta_as::<JcpMeta>)
-        .transpose()
-        .expect("meta should be valid");
-
-    assert_eq!(meta, Some(JcpMeta { jcp_token }));
+    let meta = Value::Object(req.meta.expect("meta should be valid"));
+    assert_eq!(meta, json!({JcpToken::FIELD_NAME: jcp_token}));
 }
 
 #[test]
@@ -218,10 +216,6 @@ fn invalid_messages_bypass() {
         let agent_msg = harness.client_recv();
         assert_eq!(agent_msg.0, expected_msg);
     }
-}
-
-fn read_meta_as<T: DeserializeOwned>(meta: Meta) -> serde_json::Result<T> {
-    serde_json::from_value(serde_json::Value::Object(meta))
 }
 
 fn prompt_response_with_git_meta(meta: EndTurnMeta) -> PromptResponse {
