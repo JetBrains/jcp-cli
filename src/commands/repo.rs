@@ -198,11 +198,15 @@ pub fn list(
             ]
         })
         .collect();
-    write!(
-        out,
-        "{}",
-        table(&["FULL NAME", "PROVIDER", "READ/WRITE", "CLONE URL"], &rows)
-    )?;
+    if rows.is_empty() {
+        writeln!(out, "No repositories.")?;
+    } else {
+        write!(
+            out,
+            "{}",
+            table(&["FULL NAME", "PROVIDER", "READ/WRITE", "CLONE URL"], &rows)
+        )?;
+    }
     print_provider_errors(&response.value.provider_errors, err)?;
     Ok(())
 }
@@ -238,6 +242,10 @@ pub fn branches(
         .iter()
         .map(|b| vec![b.name.clone(), b.commit_sha.clone().unwrap_or_default()])
         .collect();
+    if rows.is_empty() {
+        writeln!(out, "No branches.")?;
+        return Ok(());
+    }
     write!(out, "{}", table(&["NAME", "COMMIT"], &rows))?;
     Ok(())
 }
@@ -261,6 +269,10 @@ pub fn providers(api: &ReposApi, json: bool, out: &mut impl Write) -> Result<(),
             ]
         })
         .collect();
+    if rows.is_empty() {
+        writeln!(out, "No VCS accounts are connected.")?;
+        return Ok(());
+    }
     write!(
         out,
         "{}",

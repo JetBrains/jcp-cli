@@ -6,7 +6,7 @@ mod fake_http;
 use fake_http::{FakeHttp, Reply};
 use flate2::{Compression, write::GzEncoder};
 use serde_json::{Value, json};
-use std::{io::Write, path::Path, process::Command};
+use std::{cell::Cell, io::Write, path::Path, process::Command};
 use tempfile::TempDir;
 
 const SID: &str = "e4c83d51-c095-436f-99ed-4d1f30c8cc0f";
@@ -25,6 +25,8 @@ struct Run {
 struct Env {
     fake: FakeHttp,
     dir: TempDir,
+    /// `false` when the test checks the tokens itself
+    check_tokens: Cell<bool>,
 }
 
 impl Env {
@@ -32,6 +34,7 @@ impl Env {
         Self {
             fake: FakeHttp::start(),
             dir: TempDir::new().unwrap(),
+            check_tokens: Cell::new(true),
         }
     }
 
@@ -82,7 +85,7 @@ impl Env {
 impl Drop for Env {
     /// Each API request has the Bearer token. Presigned downloads have no token.
     fn drop(&mut self) {
-        if std::thread::panicking() {
+        if std::thread::panicking() || !self.check_tokens.get() {
             return;
         }
         for r in self.fake.requests() {
@@ -301,6 +304,99 @@ fn start_with_env_name_sends_env_config_id() {
             .is_none()
     );
     assert!(body.get("environmentConfigFallbackMode").is_none());
+}
+
+/// An environment with extra repositories. `extra` gives the name and the default branch of each one.
+fn multi_repo_env(env: &Env, extra: &[(&str, Value)]) {
+    let urls: Vec<Value> = extra
+        .iter()
+        .map(|(name, _)| json!({"url": format!("https://github.com/JetBrains/{name}")}))
+        .collect();
+    env.route(
+        "GET",
+        &format!("{AB}/env-configs"),
+        Reply::json(json!([
+            {"id": "env-3", "name": "Multi env", "serviceHost": "github.com", "organization": "JetBrains",
+             "repositoryName": "marinator", "shared": false, "additionalRepositories": urls}
+        ])),
+    )
+    .route("GET", &format!("{AS}/agents"), agents())
+    .route("POST", &format!("{AS}/tasks"), task());
+    for (name, branch) in extra {
+        env.route(
+            "GET",
+            &format!("{RC}/repositories/github?fullName=JetBrains%2F{name}"),
+            Reply::json(
+                json!({"fullName": format!("JetBrains/{name}"), "provider": "github",
+                               "cloneUrl": format!("https://github.com/JetBrains/{name}.git"),
+                               "defaultBranch": branch}),
+            ),
+        );
+    }
+}
+
+#[test]
+fn start_with_env_sends_additional_repos_in_order() {
+    let env = Env::new();
+    multi_repo_env(
+        &env,
+        &[("zeta", json!("develop")), ("alpha", json!("master"))],
+    );
+    let run = env.jcp(&[
+        "session",
+        "start",
+        "--env",
+        "Multi env",
+        "--branch",
+        "feature",
+        "--detach",
+        "Do it",
+    ]);
+    ok(&run);
+    let body = env.fake.requests_to("POST", &format!("{AS}/tasks"))[0].body_json();
+    assert_eq!(body["ref"], "feature");
+    assert_eq!(
+        body["additionalRepos"],
+        json!([
+            {"repositoryUrl": "https://github.com/JetBrains/zeta", "startPoint": {"branch": "develop"}},
+            {"repositoryUrl": "https://github.com/JetBrains/alpha", "startPoint": {"branch": "master"}}
+        ])
+    );
+    assert!(
+        run.stderr
+            .contains("Also clones: https://github.com/JetBrains/zeta (develop)\n"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn start_with_additional_repo_without_default_branch_sends_no_task() {
+    let env = Env::new();
+    multi_repo_env(&env, &[("zeta", json!("develop")), ("other", Value::Null)]);
+    let run = env.jcp(&[
+        "session",
+        "start",
+        "--env",
+        "Multi env",
+        "--branch",
+        "feature",
+        "--detach",
+        "Do it",
+    ]);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stderr.contains(
+            "Cannot get the default branch of the additional repository https://github.com/JetBrains/other: The repository has no default branch."
+        ),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        env.fake
+            .requests_to("POST", &format!("{AS}/tasks"))
+            .is_empty()
+    );
 }
 
 /// An environment for a Space repository: the host does not give the provider
@@ -974,7 +1070,7 @@ fn diag_shows_all_parts() {
         .fake
         .requests_to("GET", &format!("{AS}/sessions/{SID}/history"))[0];
     assert!(
-        history.url.ends_with("offset=0&limit=20"),
+        history.url.ends_with("offset=0&limit=21"),
         "{}",
         history.url
     );
@@ -1120,7 +1216,7 @@ fn history_tail_and_json() {
     let request = &env.fake.requests()[0];
     assert_eq!(
         request.url,
-        format!("{AS}/sessions/{SID}/history?offset=0&limit=2")
+        format!("{AS}/sessions/{SID}/history?offset=0&limit=3")
     );
     let first = run.stdout.find("first").expect(&run.stdout);
     assert!(
@@ -1132,6 +1228,120 @@ fn history_tail_and_json() {
     let run = env.jcp(&["session", "history", SID, "--tail", "2", "--json"]);
     ok(&run);
     assert_eq!(run.stdout, format!("{}\n{}\n", items[0], items[1]));
+}
+
+/// A history page with the indexes `first..`. `items` are in chronological order.
+fn history_page(first: u64, items: &[String], total: u64) -> Reply {
+    let messages: Vec<Value> = items
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(i, m)| json!({"index": first + i as u64, "message": m}))
+        .collect();
+    Reply::json(
+        json!({"messages": messages, "pagination": {"offset": 0, "limit": 1000, "totalItems": total}}),
+    )
+}
+
+fn usage_update() -> String {
+    json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": SID, "update": {
+        "sessionUpdate": "usage_update", "used": 10, "size": 100}}})
+    .to_string()
+}
+
+#[test]
+fn history_tail_counts_message_chunks_as_one_entry() {
+    let env = Env::new();
+    let items = [
+        tool_call("Read A"),
+        agent_text("one "),
+        agent_text("two "),
+        usage_update(),
+        agent_text("three"),
+    ];
+    let path = format!("{AS}/sessions/{SID}/history");
+    env.route(
+        "GET",
+        &format!("{path}?offset=0&limit=2"),
+        history_page(3, &items[3..], 5),
+    )
+    .route(
+        "GET",
+        &format!("{path}?offset=2&limit=2"),
+        history_page(1, &items[1..3], 5),
+    )
+    .route(
+        "GET",
+        &format!("{path}?offset=4&limit=4"),
+        history_page(0, &items[..1], 5),
+    );
+    let run = env.jcp(&["session", "history", SID, "--tail", "1"]);
+    ok(&run);
+    assert!(
+        run.stdout.contains("agent ▎one two three\n"),
+        "{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("Read A"), "{}", run.stdout);
+    assert!(!run.stdout.contains("event"), "{}", run.stdout);
+    let urls: Vec<String> = env.fake.requests().iter().map(|r| r.url.clone()).collect();
+    assert_eq!(
+        urls,
+        [
+            format!("{path}?offset=0&limit=2"),
+            format!("{path}?offset=2&limit=2"),
+            format!("{path}?offset=4&limit=4"),
+        ]
+    );
+
+    let run = env.jcp(&["session", "history", SID, "--tail", "1", "--json"]);
+    ok(&run);
+    assert_eq!(run.stdout, format!("{}\n", items[1..].join("\n")));
+}
+
+#[test]
+fn history_shows_each_item_once_when_pages_overlap() {
+    let env = Env::new();
+    let items = [
+        tool_call("Read A"),
+        agent_text("x1"),
+        agent_text("x2"),
+        agent_text("x3"),
+        tool_call("Read B"),
+    ];
+    // The item `Read B` comes after the first page, so the second page starts one item earlier
+    env.route_seq(
+        "GET",
+        &format!("{AS}/sessions/{SID}/history"),
+        vec![
+            history_page(1, &items[1..4], 4),
+            history_page(0, &items[..2], 5),
+        ],
+    );
+    let run = env.jcp(&["session", "history", SID, "--tail", "2"]);
+    ok(&run);
+    assert_eq!(run.stdout.matches("Read A").count(), 1, "{}", run.stdout);
+    assert!(run.stdout.contains("agent ▎x1x2x3\n"), "{}", run.stdout);
+    assert_eq!(env.fake.requests().len(), 2);
+}
+
+#[test]
+fn history_does_not_wrap_when_stdout_is_not_a_terminal() {
+    let env = Env::new();
+    let text = "word ".repeat(60);
+    env.route(
+        "GET",
+        &format!("{AS}/sessions/{SID}/history"),
+        history(&[agent_text(&text)], 1),
+    );
+    let run = env.jcp(&["session", "history", SID]);
+    ok(&run);
+    let line = run
+        .stdout
+        .lines()
+        .find(|l| l.contains("agent"))
+        .expect(&run.stdout);
+    assert!(line.ends_with(text.as_str()), "{}", run.stdout);
 }
 
 #[test]
@@ -1278,6 +1488,33 @@ fn env_list_and_filters() {
         "{}",
         repo.stdout
     );
+    let ids = |run: &Run| -> Vec<String> {
+        ok(run);
+        let items: Vec<Value> = serde_json::from_str(&run.stdout).unwrap();
+        items
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        ids(&env.jcp(&["env", "list", "--json"])),
+        ["env-1", "env-2"]
+    );
+    let mine_json = env.jcp(&["env", "list", "--mine", "--json"]);
+    assert_eq!(ids(&mine_json), ["env-1"]);
+    // The server JSON is kept as it is, with the fields that the CLI does not read
+    assert_eq!(
+        serde_json::from_str::<Value>(&mine_json.stdout).unwrap()[0],
+        env_configs()[0]
+    );
+    assert_eq!(
+        ids(&env.jcp(&["env", "list", "--shared", "--json"])),
+        ["env-2"]
+    );
+    assert_eq!(
+        ids(&env.jcp(&["env", "list", "--repo", "JetBrains/air", "--json"])),
+        ["env-2"]
+    );
     ok(&env.jcp(&["env", "list", "--drafts", "--project", "p1"]));
     assert_eq!(
         env.fake.requests().last().unwrap().url,
@@ -1398,6 +1635,73 @@ fn agents_marks_defaults() {
     assert!(run.stdout.contains("codex (Codex)"), "{}", run.stdout);
 }
 
+#[test]
+fn empty_lists_print_one_line() {
+    let env = Env::new();
+    let sessions =
+        json!({"sessions": [], "pagination": {"offset": 0, "limit": 20, "totalItems": 0}});
+    env.route(
+        "GET",
+        &format!("{AS}/v1/sessions"),
+        Reply::json(sessions.clone()),
+    )
+    .route(
+        "GET",
+        &format!("{AS}/sessions/{SID}/artifacts"),
+        Reply::json(json!([])),
+    )
+    .route(
+        "GET",
+        &format!("{AS}/debug/{SID}"),
+        Reply::json(json!({"id": SID, "logs": []})),
+    )
+    .route("GET", &format!("{AB}/env-configs"), Reply::json(json!([])))
+    .route(
+        "GET",
+        &format!("{RC}/repositories"),
+        Reply::json(json!({"data": []})),
+    )
+    .route(
+        "GET",
+        &format!("{RC}/repositories/github/branches"),
+        Reply::json(json!({"data": []})),
+    )
+    .route(
+        "GET",
+        &format!("{RC}/providers"),
+        Reply::json(json!({"authorizedProviders": []})),
+    );
+    let cases = [
+        (vec!["session", "list"], "No sessions.\n"),
+        (vec!["session", "artifacts", SID], "No artifacts.\n"),
+        (vec!["session", "logs", SID, "--list"], "No log files.\n"),
+        (vec!["env", "list"], "No environments.\n"),
+        (vec!["repo", "list"], "No repositories.\n"),
+        (
+            vec!["repo", "branches", "https://github.com/JetBrains/marinator"],
+            "No branches.\n",
+        ),
+        (
+            vec!["repo", "providers"],
+            "No VCS accounts are connected.\n",
+        ),
+    ];
+    for (args, expected) in cases {
+        let run = env.jcp(&args);
+        ok(&run);
+        assert_eq!(run.stdout, expected, "{args:?}");
+    }
+    let run = env.jcp(&["session", "list", "--json"]);
+    ok(&run);
+    assert_eq!(
+        serde_json::from_str::<Value>(&run.stdout).unwrap(),
+        sessions
+    );
+    let run = env.jcp(&["session", "artifacts", SID, "--json"]);
+    ok(&run);
+    assert_eq!(run.stdout, "[]\n");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------------------------
@@ -1441,6 +1745,104 @@ fn http_errors_have_clear_messages() {
             run.stderr
         );
     }
+}
+
+#[test]
+fn static_token_is_not_renewed_on_401() {
+    let env = Env::new();
+    env.route(
+        "GET",
+        &format!("{AS}/sessions/{SID}/status"),
+        Reply::text(401, ""),
+    );
+    let run = env.jcp(&["session", "wait", SID, "--interval", "0.01"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stderr.contains("jcp login"), "{}", run.stderr);
+    assert_eq!(env.fake.requests().len(), 1);
+}
+
+/// A JWT with one organization and one workspace. The CLI does not verify the signature.
+const ORGS_USER_INFO: &str = "eyJhbGciOiJub25lIn0.eyJvcmdNZW1iZXJzaGlwcyI6W3sib3JnSWQiOiJPUkciLCJ3b3Jrc3BhY2VzIjpbeyJpZCI6IldTIn1dfV19.sig";
+
+/// Runs jcp with the login from the keychain file, not with `JCP_ACCESS_TOKEN`. The first login gives the token
+/// `A`, the second login gives the token `B`.
+fn jcp_with_login(env: &Env, args: &[&str]) -> Run {
+    env.check_tokens.set(false);
+    let keychain = env.dir.path().join("secrets.toml");
+    std::fs::write(&keychain, "[secrets]\n\"refresh-token\" = \"r1\"\n").unwrap();
+    // Each login refreshes the token and then switches the audience
+    env.route_seq(
+        "POST",
+        "/oauth2/token",
+        vec![
+            Reply::json(json!({"access_token": "login-1"})),
+            Reply::json(json!({"access_token": "A"})),
+            Reply::json(json!({"access_token": "login-2"})),
+            Reply::json(json!({"access_token": "B"})),
+        ],
+    )
+    .route("GET", "/org/orgsuserinfo", Reply::text(200, ORGS_USER_INFO));
+    let output = Command::new(env!("CARGO_BIN_EXE_jcp"))
+        .arg("--staging")
+        .args(args)
+        .current_dir(env.dir.path())
+        .env("JCP_API_URL", env.fake.base_url())
+        .env("OAUTH_URL", env.url("/oauth2"))
+        .env("KEYCHAIN_FILE", &keychain)
+        .env_remove("JCP_ACCESS_TOKEN")
+        .env_remove("JCP_ENVIRONMENT")
+        .output()
+        .unwrap();
+    Run {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stdout_bytes: output.stdout,
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+fn status_tokens(env: &Env) -> Vec<Option<String>> {
+    env.fake
+        .requests_to("GET", &format!("{AS}/sessions/{SID}/status"))
+        .into_iter()
+        .map(|r| r.authorization)
+        .collect()
+}
+
+#[test]
+fn login_token_is_renewed_one_time_on_401() {
+    let env = Env::new();
+    env.route_seq(
+        "GET",
+        &format!("{AS}/sessions/{SID}/status"),
+        vec![Reply::text(401, ""), Reply::text(200, "FINISHED")],
+    );
+    let run = jcp_with_login(&env, &["session", "wait", SID, "--interval", "0.01"]);
+    ok(&run);
+    assert_eq!(run.stdout, "FINISHED\n");
+    assert_eq!(
+        status_tokens(&env),
+        [Some("Bearer A".to_string()), Some("Bearer B".to_string())]
+    );
+    assert_eq!(env.fake.requests_to("POST", "/oauth2/token").len(), 4);
+    assert_eq!(env.fake.requests_to("GET", "/org/orgsuserinfo").len(), 2);
+}
+
+#[test]
+fn second_401_after_renewal_is_an_error() {
+    let env = Env::new();
+    env.route(
+        "GET",
+        &format!("{AS}/sessions/{SID}/status"),
+        Reply::text(401, ""),
+    );
+    let run = jcp_with_login(&env, &["session", "wait", SID, "--interval", "0.01"]);
+    assert_eq!(run.code, 1);
+    assert!(run.stderr.contains("jcp login"), "{}", run.stderr);
+    assert_eq!(
+        status_tokens(&env),
+        [Some("Bearer A".to_string()), Some("Bearer B".to_string())]
+    );
 }
 
 #[test]

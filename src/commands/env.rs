@@ -7,7 +7,11 @@ use super::{
     session::is_uuid,
     usage,
 };
-use crate::api::env_configs::{EnvConfig, EnvConfigDetails, EnvConfigsApi};
+use crate::api::{
+    ApiError,
+    env_configs::{EnvConfig, EnvConfigDetails, EnvConfigsApi},
+};
+use serde_json::Value;
 use std::io::Write;
 
 /// Selects one environment by ID or by name.
@@ -114,17 +118,37 @@ pub struct ListArgs<'a> {
 pub fn list(api: &EnvConfigsApi, args: &ListArgs, out: &mut impl Write) -> Result<(), CliError> {
     let repo = args.repo.map(RepoArg::parse).transpose()?;
     let response = api.list(args.drafts, args.project)?;
+    let keep = |c: &EnvConfig| {
+        (!args.mine || !c.shared)
+            && (!args.shared || c.shared)
+            && repo.as_ref().is_none_or(|r| matches_repo(c, r))
+    };
     if args.json {
-        writeln!(out, "{}", response.raw)?;
+        if !args.mine && !args.shared && repo.is_none() {
+            writeln!(out, "{}", response.raw)?;
+            return Ok(());
+        }
+        // The server JSON of the kept environments. The typed list has the same order as the server list.
+        let raw: Vec<Value> =
+            serde_json::from_str(&response.raw).map_err(|source| ApiError::Decode {
+                path: "/env-configs".to_string(),
+                body: response.raw.chars().take(500).collect(),
+                source,
+            })?;
+        let kept: Vec<Value> = raw
+            .into_iter()
+            .zip(&response.value)
+            .filter(|(_, c)| keep(c))
+            .map(|(value, _)| value)
+            .collect();
+        writeln!(out, "{}", Value::Array(kept))?;
         return Ok(());
     }
-    let configs: Vec<&EnvConfig> = response
-        .value
-        .iter()
-        .filter(|c| !args.mine || !c.shared)
-        .filter(|c| !args.shared || c.shared)
-        .filter(|c| repo.as_ref().is_none_or(|r| matches_repo(c, r)))
-        .collect();
+    let configs: Vec<&EnvConfig> = response.value.iter().filter(|c| keep(c)).collect();
+    if configs.is_empty() {
+        writeln!(out, "No environments.")?;
+        return Ok(());
+    }
     write!(out, "{}", env_table(&configs))?;
     Ok(())
 }

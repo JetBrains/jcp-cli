@@ -14,8 +14,9 @@ use crate::{
         ApiError,
         env_configs::EnvConfig,
         spawner::{
-            ClientInfo, CreateTaskRequest, FAILED_STATUSES, FINAL_STATUSES, LaunchConfig, Session,
-            SessionConfigOptions, SpawnerApi, TaskSessionSpec, USER_INPUT_REQUIRED,
+            AdditionalRepo, ClientInfo, CreateTaskRequest, FAILED_STATUSES, FINAL_STATUSES,
+            LaunchConfig, Session, SessionConfigOptions, SpawnerApi, StartPoint, TaskSessionSpec,
+            USER_INPUT_REQUIRED,
         },
     },
 };
@@ -175,6 +176,28 @@ pub fn plan_repository(
     ))
 }
 
+/// Makes the plan of an extra repository of the environment. The session clones its default branch.
+fn plan_additional_repository(url: &str) -> Result<RepoPlan, CliError> {
+    let RepoArg::Url {
+        url,
+        host,
+        full_name,
+    } = RepoArg::parse(url)?
+    else {
+        return Err(usage(format!(
+            "The additional repository `{url}` is not a URL."
+        )));
+    };
+    Ok(RepoPlan {
+        url,
+        full_name,
+        provider: provider_for_host(&host).map(str::to_string),
+        host: None,
+        git_ref: None,
+        commit_hash: None,
+    })
+}
+
 /// repo-connections gives 404 "No token found for provider X" when the user did not connect that VCS account.
 fn is_missing_vcs_token(error: &CliError) -> bool {
     matches!(error, CliError::Api(ApiError::NotFound { body, .. }) if body.contains("No token found"))
@@ -206,6 +229,58 @@ fn default_branch(
         .ok_or_else(|| usage("The repository has no default branch."))
 }
 
+/// Tells the user to connect the VCS account when repo-connections has no token for it. For other errors, `other`
+/// gives the message.
+fn default_branch_error(
+    services: &Services,
+    plan: &RepoPlan,
+    error: CliError,
+    other: impl FnOnce(CliError) -> String,
+) -> CliError {
+    if is_missing_vcs_token(&error) {
+        let provider = plan.provider.as_deref().unwrap_or("VCS");
+        let place = services
+            .integrations_url()
+            .map_or_else(|| "in Air".to_string(), |url| format!("at {url}"));
+        usage(format!(
+            "Your {provider} account is not connected to Air. Connect it {place}, then run the command again."
+        ))
+    } else {
+        usage(other(error))
+    }
+}
+
+/// Gets the start points of the extra repositories of the environment, in the order of the environment.
+/// The server keeps no branch for them, so each one starts from its default branch.
+fn additional_repos(
+    services: &Services,
+    env: &EnvConfig,
+    err: &mut impl Write,
+) -> Result<Vec<AdditionalRepo>, CliError> {
+    let mut repos = Vec::new();
+    for repository in env.additional_repositories.iter().flatten() {
+        let branch = match &repository.git_ref {
+            Some(branch) => branch.clone(),
+            None => {
+                let plan = plan_additional_repository(&repository.url)?;
+                default_branch(services, &plan, err).map_err(|e| {
+                    default_branch_error(services, &plan, e, |e| {
+                        format!(
+                            "Cannot get the default branch of the additional repository {}: {e}",
+                            repository.url
+                        )
+                    })
+                })?
+            }
+        };
+        repos.push(AdditionalRepo {
+            repository_url: repository.url.clone(),
+            start_point: StartPoint { branch },
+        });
+    }
+    Ok(repos)
+}
+
 /// Makes the `POST /tasks` body.
 pub fn build_task_request(
     prompt: &str,
@@ -213,6 +288,7 @@ pub fn build_task_request(
     agent_id: &str,
     options: SessionConfigOptions,
     env_config_id: Option<&str>,
+    additional_repos: Vec<AdditionalRepo>,
 ) -> CreateTaskRequest {
     let options = (options != SessionConfigOptions::default()).then_some(options);
     CreateTaskRequest {
@@ -231,6 +307,7 @@ pub fn build_task_request(
             },
             env_config_id: env_config_id.map(str::to_string),
         }],
+        additional_repos,
     }
 }
 
@@ -322,23 +399,20 @@ pub fn start(
 
     if plan.needs_default_branch() {
         let branch = default_branch(services, &plan, err).map_err(|e| {
-            if is_missing_vcs_token(&e) {
-                let provider = plan.provider.as_deref().unwrap_or("VCS");
-                let place = services
-                    .integrations_url()
-                    .map_or_else(|| "in Air".to_string(), |url| format!("at {url}"));
-                usage(format!(
-                    "Your {provider} account is not connected to Air. Connect it {place}, then run the command again."
-                ))
-            } else {
-                usage(format!(
+            default_branch_error(services, &plan, e, |e| {
+                format!(
                     "Cannot get the default branch of {}: {e} Use --branch.",
                     plan.full_name
-                ))
-            }
+                )
+            })
         })?;
         plan.git_ref = Some(branch);
     }
+
+    let additional = match &env {
+        Some(env) => additional_repos(services, env, err)?,
+        None => Vec::new(),
+    };
 
     let request = build_task_request(
         args.prompt,
@@ -346,6 +420,7 @@ pub fn start(
         &choice.agent_id,
         choice.options,
         env.as_ref().map(|e| e.id.as_str()),
+        additional,
     );
     let task = spawner.create_task(&request)?.value;
     let session_id = task
@@ -359,6 +434,13 @@ pub fn start(
     match &url {
         Some(url) => writeln!(err, "URL: {url}")?,
         None => writeln!(err, "URL: unknown (set JCP_ORG_ID to show it)")?,
+    }
+    for repo in &request.additional_repos {
+        writeln!(
+            err,
+            "Also clones: {} ({})",
+            repo.repository_url, repo.start_point.branch
+        )?;
     }
 
     if args.detach {
@@ -423,7 +505,11 @@ pub fn list(
         return Ok(());
     }
     let sessions = &response.value.sessions;
-    write!(out, "{}", sessions_table(sessions))?;
+    if sessions.is_empty() {
+        writeln!(out, "No sessions.")?;
+    } else {
+        write!(out, "{}", sessions_table(sessions))?;
+    }
     if let Some(p) = &response.value.pagination {
         let shown_to = args.offset + sessions.len() as u64;
         if !sessions.is_empty() && shown_to < p.total_items {
@@ -609,6 +695,10 @@ pub fn artifacts(
         writeln!(out, "{}", response.raw)?;
         return Ok(());
     }
+    if response.value.is_empty() {
+        writeln!(out, "No artifacts.")?;
+        return Ok(());
+    }
     write!(out, "{}", artifacts_table(&response.value))?;
     Ok(())
 }
@@ -734,6 +824,7 @@ mod tests {
             "claude",
             SessionConfigOptions::default(),
             env_id,
+            Vec::new(),
         ))
         .unwrap()
     }
@@ -838,6 +929,7 @@ mod tests {
                 reasoning_effort: Some("high".into()),
             },
             None,
+            Vec::new(),
         );
         assert_eq!(
             serde_json::to_value(request).unwrap()["sessions"][0]["launchConfig"],

@@ -5,7 +5,7 @@ use reqwest::{
     blocking::{Client, RequestBuilder, Response},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 use thiserror::Error;
 
 pub mod env_configs;
@@ -86,12 +86,18 @@ fn detail(body: &str) -> String {
     }
 }
 
+/// Gets a new access token after the server refused the current one. It returns `None` when a new token is not
+/// available.
+pub type TokenRenewal = Rc<dyn Fn() -> Option<String>>;
+
 /// An HTTP client for one service. It sends the Bearer token with each request.
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
     base_url: String,
-    token: String,
+    /// The clones share the token, so that one renewal is sufficient for all of them
+    token: Rc<RefCell<String>>,
+    renewal: Option<TokenRenewal>,
 }
 
 impl HttpClient {
@@ -99,8 +105,16 @@ impl HttpClient {
         Self {
             client: create_client(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            token: token.into(),
+            token: Rc::new(RefCell::new(token.into())),
+            renewal: None,
         }
+    }
+
+    /// When the server refuses the token (401), the client gets a new token from `renewal` and sends the request
+    /// again one time.
+    pub fn with_renewal(mut self, renewal: TokenRenewal) -> Self {
+        self.renewal = Some(renewal);
+        self
     }
 
     pub fn get_json<T: DeserializeOwned>(
@@ -188,23 +202,40 @@ impl HttpClient {
         query: &[(&str, String)],
         body: Option<&B>,
     ) -> Result<Response, ApiError> {
+        let response = self.send_once(&method, path, query, body)?;
+        if response.status() == StatusCode::UNAUTHORIZED
+            && let Some(renewal) = &self.renewal
+            && let Some(token) = renewal()
+        {
+            *self.token.borrow_mut() = token;
+            let response = self.send_once(&method, path, query, body)?;
+            return check_status(response, method.as_str(), path);
+        }
+        check_status(response, method.as_str(), path)
+    }
+
+    fn send_once<B: Serialize>(
+        &self,
+        method: &Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&B>,
+    ) -> Result<Response, ApiError> {
         let url = format!("{}{}", self.base_url, path);
-        let mut request: RequestBuilder = self
-            .client
-            .request(method.clone(), &url)
-            .bearer_auth(&self.token);
+        let token = self.token.borrow().clone();
+        let mut request: RequestBuilder =
+            self.client.request(method.clone(), &url).bearer_auth(token);
         if !query.is_empty() {
             request = request.query(query);
         }
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().map_err(|source| ApiError::Transport {
+        request.send().map_err(|source| ApiError::Transport {
             method: method.to_string(),
             path: path.to_string(),
             source,
-        })?;
-        check_status(response, method.as_str(), path)
+        })
     }
 }
 

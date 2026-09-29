@@ -14,7 +14,9 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    io, thread,
+    io,
+    rc::Rc,
+    thread,
     time::{Duration, SystemTime},
 };
 use thiserror::Error;
@@ -80,6 +82,10 @@ impl CliError {
 pub trait Credentials {
     fn token_for(&mut self, audience: &str) -> Result<String, CliError>;
 
+    /// Gets a new token for the audience after the server refused the current one. It returns `None` when the
+    /// credentials cannot give a new token.
+    fn renew_token(&mut self, audience: &str) -> Result<Option<String>, CliError>;
+
     /// Organization ID. It is necessary only for Air web URLs.
     fn org_id(&mut self) -> Result<Option<String>, CliError>;
 }
@@ -93,6 +99,10 @@ pub struct StaticCredentials {
 impl Credentials for StaticCredentials {
     fn token_for(&mut self, _audience: &str) -> Result<String, CliError> {
         Ok(self.token.clone())
+    }
+
+    fn renew_token(&mut self, _audience: &str) -> Result<Option<String>, CliError> {
+        Ok(None)
     }
 
     fn org_id(&mut self) -> Result<Option<String>, CliError> {
@@ -143,6 +153,12 @@ impl Credentials for LoginCredentials {
             })
     }
 
+    /// Opens the login again, because the organization info and the tokens of the old login can also expire.
+    fn renew_token(&mut self, audience: &str) -> Result<Option<String>, CliError> {
+        self.session = None;
+        self.token_for(audience).map(Some)
+    }
+
     fn org_id(&mut self) -> Result<Option<String>, CliError> {
         Ok(Some(self.session()?.org_id().to_string()))
     }
@@ -172,7 +188,7 @@ pub struct Services {
     /// The `orca-cli --stack` value for hints
     pub orca_stack: String,
     pub clock: Box<dyn Clock>,
-    credentials: RefCell<Box<dyn Credentials>>,
+    credentials: Rc<RefCell<Box<dyn Credentials>>>,
 }
 
 impl Services {
@@ -186,13 +202,23 @@ impl Services {
             env_config,
             orca_stack: orca_stack.into(),
             clock,
-            credentials: RefCell::new(credentials),
+            credentials: Rc::new(RefCell::new(credentials)),
         }
     }
 
     fn client(&self, base_url: String, audience: &str) -> Result<HttpClient, CliError> {
         let token = self.credentials.borrow_mut().token_for(audience)?;
-        Ok(HttpClient::new(base_url, token))
+        let credentials = Rc::clone(&self.credentials);
+        let audience = audience.to_string();
+        Ok(
+            HttpClient::new(base_url, token).with_renewal(Rc::new(move || {
+                credentials
+                    .borrow_mut()
+                    .renew_token(&audience)
+                    .ok()
+                    .flatten()
+            })),
+        )
     }
 
     pub fn spawner(&self) -> Result<SpawnerApi, CliError> {

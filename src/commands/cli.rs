@@ -174,7 +174,7 @@ pub enum SessionCommand {
         /// Show new items until the session stops
         #[arg(long)]
         follow: bool,
-        /// Show only the last N items
+        /// Show only the last N conversation entries. The chunks of one message are one entry
         #[arg(long)]
         tail: Option<u64>,
         /// Print the raw ACP messages, one on each line

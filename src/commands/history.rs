@@ -7,14 +7,18 @@ use crate::{
 };
 use serde_json::Value as JsonValue;
 use std::{collections::HashMap, io::Write};
-use terminal_size::terminal_size;
+use terminal_size::terminal_size_of;
 
 /// Page size for incremental fetches
 const FOLLOW_PAGE: u64 = 100;
 
+/// Session updates that the text output does not show. They are not conversation entries.
+const HIDDEN_UPDATES: &[&str] = &["session_info_update", "usage_update"];
+
 /// Fetches history items in chronological order.
 ///
-/// The server sorts pages from the newest item to the oldest. `tail` limits the result to the last N items.
+/// The server sorts pages from the newest item to the oldest. `tail` limits the result to the items of the last N
+/// conversation entries (see [`entry_starts`]).
 pub fn fetch(
     api: &SpawnerApi,
     id: &str,
@@ -24,22 +28,98 @@ pub fn fetch(
     let mut offset = 0;
     loop {
         let limit = match tail {
-            Some(tail) => tail.saturating_sub(offset).min(MAX_HISTORY_PAGE),
+            // One more item shows where the first of the N entries starts. Next pages are larger.
+            Some(tail) => tail.saturating_add(1).max(offset).min(MAX_HISTORY_PAGE),
             None => MAX_HISTORY_PAGE,
         };
-        if limit == 0 {
-            break;
-        }
         let page = api.history(id, offset, limit)?.value;
         let count = page.messages.len() as u64;
         items.extend(page.messages);
+        sort_unique(&mut items);
         offset += count;
         if count == 0 || count < limit || offset >= page.pagination.total_items {
             break;
         }
+        // When there are more than N entries, the last N entries are complete
+        if tail.is_some_and(|tail| entry_starts(&items).len() as u64 > tail) {
+            break;
+        }
     }
-    items.sort_by_key(|m| m.index);
+    if let Some(tail) = tail {
+        let starts = entry_starts(&items);
+        if starts.len() as u64 > tail {
+            let first = starts
+                .get(starts.len() - tail as usize)
+                .copied()
+                .unwrap_or(items.len());
+            items.drain(..first);
+        }
+    }
     Ok(items)
+}
+
+/// Sorts the items by index and removes the items that show again. New items move the pages, so the next page can
+/// start with items of the previous page.
+fn sort_unique(items: &mut Vec<SessionHistoryMessage>) {
+    items.sort_by_key(|m| m.index);
+    items.dedup_by_key(|m| m.index);
+}
+
+/// How the text output shows one item
+#[derive(PartialEq, Debug, Clone, Copy)]
+enum ItemKind {
+    /// Not shown
+    Hidden,
+    /// Joined with the chunks of the same type before it
+    Chunk(ChunkType),
+    /// Shown under a new header
+    Block(ChunkType),
+}
+
+fn item_kind(message: &str) -> ItemKind {
+    let Ok(json) = serde_json::from_str::<JsonValue>(message) else {
+        return ItemKind::Block(ChunkType::Event);
+    };
+    match json.get("method").and_then(JsonValue::as_str) {
+        Some("session/update") => {
+            match str_field(&json["params"]["update"], "sessionUpdate").unwrap_or("") {
+                "user_message_chunk" => ItemKind::Chunk(ChunkType::User),
+                "agent_message_chunk" => ItemKind::Chunk(ChunkType::Agent),
+                "agent_thought_chunk" => ItemKind::Chunk(ChunkType::Thought),
+                "tool_call" | "tool_call_update" => ItemKind::Block(ChunkType::Tool),
+                "plan" => ItemKind::Block(ChunkType::Plan),
+                kind if HIDDEN_UPDATES.contains(&kind) => ItemKind::Hidden,
+                _ => ItemKind::Block(ChunkType::Event),
+            }
+        }
+        Some("session/prompt") => ItemKind::Block(ChunkType::User),
+        _ => ItemKind::Block(ChunkType::Event),
+    }
+}
+
+/// Gives the position of the first item of each conversation entry, as [`HistoryRenderer`] groups the items.
+///
+/// A run of chunks of the same type (for example, the chunks of one agent message) is one entry. Each other shown
+/// item is one entry. Hidden items are not entries and do not stop a run of chunks.
+fn entry_starts(items: &[SessionHistoryMessage]) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut last_type = None;
+    for (position, item) in items.iter().enumerate() {
+        match item_kind(&item.message) {
+            ItemKind::Hidden => {}
+            ItemKind::Chunk(ty) => {
+                if last_type != Some(ty) {
+                    starts.push(position);
+                }
+                last_type = Some(ty);
+            }
+            ItemKind::Block(ty) => {
+                starts.push(position);
+                last_type = Some(ty);
+            }
+        }
+    }
+    starts
 }
 
 /// Fetches the items that are newer than `last_index`, in chronological order.
@@ -73,7 +153,7 @@ pub fn fetch_newer(
             break;
         }
     }
-    items.sort_by_key(|m| m.index);
+    sort_unique(&mut items);
     Ok(items)
 }
 
@@ -85,8 +165,9 @@ pub struct HistoryRenderer<W: Write> {
 }
 
 impl<W: Write> HistoryRenderer<W> {
+    /// When stdout is not a terminal, the lines do not wrap.
     pub fn new(writer: W) -> Self {
-        let width = terminal_size().map(|(w, _)| w.0).unwrap_or(120) as usize;
+        let width = terminal_size_of(std::io::stdout()).map_or(usize::MAX, |(w, _)| w.0 as usize);
         Self::with_width(width, writer)
     }
 
@@ -212,6 +293,7 @@ impl<W: Write> HistoryRenderer<W> {
                 };
                 self.printer.print_block(ChunkType::Plan, &text);
             }
+            hidden if HIDDEN_UPDATES.contains(&hidden) => {}
             other => self.printer.print_block(ChunkType::Event, other),
         }
     }
@@ -367,6 +449,48 @@ mod tests {
             .to_string(),
         ]);
         assert_eq!(out, vec!["user ▎Next"]);
+    }
+
+    fn chunk(kind: &str, text: &str) -> String {
+        update(json!({"sessionUpdate": kind, "content": {"type": "text", "text": text}}))
+    }
+
+    #[test]
+    fn hides_session_info_and_usage_updates() {
+        let out = render(&[
+            chunk("agent_message_chunk", "Hel"),
+            update(json!({"sessionUpdate": "session_info_update", "title": "Fix"})),
+            update(json!({"sessionUpdate": "usage_update", "used": 10, "size": 100})),
+            chunk("agent_message_chunk", "lo"),
+        ]);
+        assert_eq!(out, vec!["agent ▎Hello"]);
+    }
+
+    #[test]
+    fn entries_follow_renderer_grouping() {
+        let items: Vec<SessionHistoryMessage> = [
+            chunk("agent_message_chunk", "a"),
+            chunk("agent_message_chunk", "b"),
+            update(json!({"sessionUpdate": "usage_update", "used": 10, "size": 100})),
+            chunk("agent_message_chunk", "c"),
+            chunk("agent_thought_chunk", "hmm"),
+            update(json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read"})),
+            update(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})),
+            update(json!({"sessionUpdate": "plan", "entries": []})),
+            update(json!({"sessionUpdate": "available_commands_update", "availableCommands": []})),
+            chunk("agent_message_chunk", "d"),
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"stopReason": "end_turn"}}).to_string(),
+            "not json".to_string(),
+            update(json!({"sessionUpdate": "session_info_update", "title": "Fix"})),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, message)| SessionHistoryMessage {
+            index: index as u64,
+            message,
+        })
+        .collect();
+        assert_eq!(entry_starts(&items), [0, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 
     #[test]

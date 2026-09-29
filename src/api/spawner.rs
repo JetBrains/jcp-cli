@@ -514,6 +514,24 @@ pub struct CreateTaskRequest {
     pub client_info: ClientInfo,
     #[serde(rename = "sessions")]
     pub sessions: Vec<TaskSessionSpec>,
+    /// Other repositories that the session clones, for example the extra repositories of the environment
+    #[serde(rename = "additionalRepos", skip_serializing_if = "Vec::is_empty")]
+    pub additional_repos: Vec<AdditionalRepo>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct AdditionalRepo {
+    #[serde(rename = "repositoryUrl")]
+    pub repository_url: String,
+    #[serde(rename = "startPoint")]
+    pub start_point: StartPoint,
+}
+
+/// The branch that the session clones. The server also accepts a commit, but the CLI does not use it.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct StartPoint {
+    #[serde(rename = "branch")]
+    pub branch: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -617,6 +635,7 @@ mod tests {
                 },
                 env_config_id: None,
             }],
+            additional_repos: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&request).unwrap(),

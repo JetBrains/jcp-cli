@@ -16,14 +16,14 @@ use std::{
     time::Duration,
 };
 
-/// History items in the `diag` report
-const DIAG_HISTORY_ITEMS: u64 = 20;
+/// Conversation entries in the `diag` report
+const DIAG_HISTORY_ENTRIES: u64 = 20;
 
 pub struct WatchOptions {
     pub interval: Duration,
     /// Show a line for each status change
     pub show_status: bool,
-    /// Show only the last N items that exist at the start. `None` shows all items.
+    /// Show only the last N conversation entries that exist at the start. `None` shows all items.
     pub initial_tail: Option<u64>,
     /// Print the raw JSON-RPC messages, one on each line
     pub json: bool,
@@ -226,7 +226,11 @@ pub fn logs(
         writeln!(err, "Warning: the server cannot list all logs: {e}")?;
     }
     let Some(name) = args.name else {
-        write!(out, "{}", logs_table(&debug.logs))?;
+        if debug.logs.is_empty() {
+            writeln!(out, "No log files.")?;
+        } else {
+            write!(out, "{}", logs_table(&debug.logs))?;
+        }
         return Ok(());
     };
     let Some(log) = debug.logs.iter().find(|l| l.name == name) else {
@@ -290,7 +294,7 @@ pub fn diag(
 ) -> Result<(), CliError> {
     let session = api.get_session(id);
     let debug = api.debug(id);
-    let items = history::fetch(api, id, Some(DIAG_HISTORY_ITEMS));
+    let items = history::fetch(api, id, Some(DIAG_HISTORY_ENTRIES));
     let artifacts = api.artifacts(id);
 
     if json {
@@ -360,7 +364,7 @@ pub fn diag(
             failed.push("debug");
         }
     }
-    writeln!(out, "\n== Last {DIAG_HISTORY_ITEMS} history items")?;
+    writeln!(out, "\n== Last {DIAG_HISTORY_ENTRIES} conversation entries")?;
     match &items {
         Ok(items) if items.is_empty() => writeln!(out, "No items.")?,
         Ok(items) => {
