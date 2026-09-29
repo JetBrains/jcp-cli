@@ -110,7 +110,7 @@ pub async fn run(cmd: &[&str], prompt: &str) -> Result<(), acp::Error> {
 /// ```
 ///
 /// Handles change in message types (indicated with header), terminal width and newlines
-struct ConversationPrinter<W: Write> {
+pub(crate) struct ConversationPrinter<W: Write> {
     writer: W,
     terminal_width: usize,
     already_printed: usize,
@@ -150,6 +150,26 @@ impl<W: Write> ConversationPrinter<W> {
         self.last_type = Some(ty);
     }
 
+    /// Prints the text under a new header, also when the type is the same as the last one.
+    pub fn print_block(&mut self, ty: ChunkType, s: &str) {
+        self.last_type = None;
+        self.print(ty, s);
+    }
+
+    /// Gives the writer, for text without a header (for example, status lines).
+    pub fn writer_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+
+    /// Ends the current line. The next text starts under a new header.
+    pub fn finish(&mut self) {
+        if self.last_type.take().is_some() {
+            let _ = self.writer.write(b"\n");
+            let _ = self.writer.flush();
+        }
+        self.already_printed = 0;
+    }
+
     fn print_line(&mut self, mut line: &str) {
         while !line.is_empty() {
             if self.already_printed >= self.terminal_width {
@@ -187,10 +207,16 @@ impl<W: Write> ConversationPrinter<W> {
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
-enum ChunkType {
+pub(crate) enum ChunkType {
     User,
     Agent,
     Thought,
+    /// A tool call or a tool call update (session history)
+    Tool,
+    /// An agent plan (session history)
+    Plan,
+    /// Other session history items
+    Event,
 }
 
 impl ChunkType {
@@ -199,6 +225,9 @@ impl ChunkType {
             ChunkType::User => "user",
             ChunkType::Agent => "agent",
             ChunkType::Thought => "thought",
+            ChunkType::Tool => "tool",
+            ChunkType::Plan => "plan",
+            ChunkType::Event => "event",
         }
     }
 }

@@ -7,6 +7,7 @@ use oauth2::{
 use reqwest::{blocking::Client, redirect::Policy};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use thiserror::Error;
 use tiny_http::{Response, Server};
 use url::Url;
@@ -15,7 +16,13 @@ use url::Url;
 const CLIENT_ID: &str = "air";
 
 /// Agent Spawner audience for upgrading OAuth access token
-const JCP_AS_AUDIENCE: &str = "jcp-agent-spawner";
+pub const JCP_AS_AUDIENCE: &str = "jcp-agent-spawner";
+
+/// Audience of the Air backend (environment configurations)
+pub const AIR_BACKEND_AUDIENCE: &str = "air-backend";
+
+/// Audience of the repo-connections service
+pub const REPO_CONNECTIONS_AUDIENCE: &str = "repo-connections";
 
 /// The expected callback path for OAuth redirect
 const CALLBACK_PATH: &str = "/space/auth";
@@ -110,6 +117,13 @@ pub fn login(env_config: &EnvConfig) -> Result<String, AuthError> {
 ///
 /// Use this with a refresh token obtained from [`login()`].
 pub fn get_access_token(refresh_token: &str, env_config: &EnvConfig) -> Result<String, AuthError> {
+    open_session(refresh_token, env_config)?.token_for(JCP_AS_AUDIENCE)
+}
+
+/// Refreshes the login one time and gets the organization info.
+///
+/// Use [`AuthSession::token_for`] to get a token for each service audience.
+pub fn open_session(refresh_token: &str, env_config: &EnvConfig) -> Result<AuthSession, AuthError> {
     let http_client = create_http_client()?;
 
     // Refresh to get a new access and ID tokens
@@ -118,11 +132,45 @@ pub fn get_access_token(refresh_token: &str, env_config: &EnvConfig) -> Result<S
     // Get organization info
     let org_info = get_org_info(&http_client, &tokens.access_token, env_config)?;
 
-    // Switch token audience for JCP access
-    let jcp_access_token =
-        retrieve_jcp_scoped_access_token(&http_client, refresh_token, &org_info, env_config)?;
+    Ok(AuthSession {
+        http_client,
+        refresh_token: refresh_token.to_string(),
+        org_info,
+        env_config: env_config.clone(),
+        tokens: HashMap::new(),
+    })
+}
 
-    Ok(jcp_access_token)
+/// A refreshed login. It keeps one access token for each audience.
+pub struct AuthSession {
+    http_client: Client,
+    refresh_token: String,
+    org_info: OrgInfo,
+    env_config: EnvConfig,
+    tokens: HashMap<String, String>,
+}
+
+impl AuthSession {
+    /// Returns an access token for the audience. The first call switches the audience, next calls use the cache.
+    pub fn token_for(&mut self, audience: &str) -> Result<String, AuthError> {
+        if let Some(token) = self.tokens.get(audience) {
+            return Ok(token.clone());
+        }
+        let token = retrieve_jcp_scoped_access_token(
+            &self.http_client,
+            &self.refresh_token,
+            &self.org_info,
+            &self.env_config,
+            audience,
+        )?;
+        self.tokens.insert(audience.to_string(), token.clone());
+        Ok(token)
+    }
+
+    /// Returns the ID of the organization of the login.
+    pub fn org_id(&self) -> &str {
+        &self.org_info.org_id
+    }
 }
 
 /// Creates an HTTP client configured for OAuth operations.
@@ -202,6 +250,7 @@ fn retrieve_jcp_scoped_access_token(
     refresh_token: &str,
     org_info: &OrgInfo,
     env_config: &EnvConfig,
+    audience: &str,
 ) -> Result<String, AuthError> {
     let token_url = format!("{}/token", env_config.oauth_base_url);
 
@@ -211,7 +260,7 @@ fn retrieve_jcp_scoped_access_token(
             ("grant_type", "switch_audience"),
             ("refresh_token", refresh_token),
             ("client_id", CLIENT_ID),
-            ("audience", JCP_AS_AUDIENCE),
+            ("audience", audience),
             ("org_id", &org_info.org_id),
             ("orgs_user_info", &org_info.raw_token),
             ("workspace_id", &org_info.workspace_id),

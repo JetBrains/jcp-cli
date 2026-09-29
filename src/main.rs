@@ -7,6 +7,10 @@ use dotenv::dotenv;
 use jcp::{
     Adapter, EnvConfig, GitCommandTool, IoTransport, TrafficLog, Transport, WebSocketTransport,
     auth::{self, AccessTokens, get_access_token, login},
+    commands::{
+        self, CliError, Credentials, EnvCommand, JCP_ORG_ID_ENV_NAME, LoginCredentials,
+        RepoCommand, Services, SessionCommand, StaticCredentials, SystemClock,
+    },
     decode_acp, decode_jrpc,
     keychain::{self, AI_PLATFORM_TOKEN_ENV_NAME, JCP_ACCESS_TOKEN_ENV_NAME, SecretBackend},
     oneshot, request_id,
@@ -47,6 +51,24 @@ enum Commands {
     #[command(hide = true)]
     /// Oneshot prompt. This is for development/testing purposes only
     OneShot { prompt: String },
+
+    /// Start, list, inspect and manage Air Cloud sessions
+    #[command(subcommand, visible_alias = "sessions")]
+    Session(SessionCommand),
+
+    /// List and show environments
+    #[command(subcommand, visible_aliases = ["environment", "envs"])]
+    Env(EnvCommand),
+
+    /// List repositories, branches and VCS providers
+    #[command(subcommand, visible_alias = "repos")]
+    Repo(RepoCommand),
+
+    /// List the agents, models, modes and reasoning levels
+    Agents {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -86,6 +108,45 @@ fn main() {
                 process::exit(1);
             }
         }
+        Commands::Session(command) => {
+            run_service_command(keychain, env_config, |s| commands::run_session(command, s))
+        }
+        Commands::Env(command) => {
+            run_service_command(keychain, env_config, |s| commands::run_env(command, s))
+        }
+        Commands::Repo(command) => {
+            run_service_command(keychain, env_config, |s| commands::run_repo(command, s))
+        }
+        Commands::Agents { json } => {
+            run_service_command(keychain, env_config, |s| commands::run_agents(*json, s))
+        }
+    }
+}
+
+/// Runs a `session`, `env`, `repo` or `agents` command, and exits with its exit code on error.
+///
+/// `JCP_ACCESS_TOKEN` (and `JCP_ORG_ID` for web URLs) replaces the login in the keychain.
+fn run_service_command(
+    keychain: Box<dyn SecretBackend>,
+    env_config: EnvConfig,
+    run: impl FnOnce(&Services) -> Result<(), CliError>,
+) {
+    let credentials: Box<dyn Credentials> = match env::var(JCP_ACCESS_TOKEN_ENV_NAME) {
+        Ok(token) => Box::new(StaticCredentials {
+            token,
+            org_id: env::var(JCP_ORG_ID_ENV_NAME).ok(),
+        }),
+        Err(_) => Box::new(LoginCredentials::new(keychain, env_config.clone())),
+    };
+    let orca_stack = if env_config.jcp_api_url == EnvConfig::production().jcp_api_url {
+        "production"
+    } else {
+        "staging"
+    };
+    let services = Services::new(env_config, orca_stack, credentials, Box::new(SystemClock));
+    if let Err(e) = run(&services) {
+        eprintln!("Error: {e}");
+        process::exit(e.exit_code());
     }
 }
 

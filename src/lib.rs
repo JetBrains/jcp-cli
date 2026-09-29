@@ -23,7 +23,9 @@ use tungstenite::{
     protocol::{CloseFrame, frame::coding::CloseCode},
 };
 
+pub mod api;
 pub mod auth;
+pub mod commands;
 pub mod keychain;
 pub mod oneshot;
 
@@ -31,6 +33,8 @@ pub mod oneshot;
 pub const AS_ACP_URL_ENV_NAME: &str = "AS_ACP_URL";
 pub const OAUTH_URL_ENV_NAME: &str = "OAUTH_URL";
 pub const JCP_API_URL_ENV_NAME: &str = "JCP_API_URL";
+/// The name of the environment variable that overrides the Air web URL (staging only)
+pub const AIR_WEB_URL_ENV_NAME: &str = "AIR_WEB_URL";
 
 /// A bidirectional transport for JSON-RPC messages.
 ///
@@ -605,6 +609,8 @@ pub struct EnvConfig {
     pub oauth_base_url: String,
     /// JetBrains Cloud Platform API base URL. Used to fetch Organization info
     pub jcp_api_url: String,
+    /// Air web application URL. Used to show task links
+    pub air_web_url: String,
 }
 
 impl EnvConfig {
@@ -617,6 +623,8 @@ impl EnvConfig {
                 .unwrap_or("https://public.aip.oauth.intservices.aws.intellij.net/oauth2".into()),
             jcp_api_url: env::var(JCP_API_URL_ENV_NAME)
                 .unwrap_or("https://api.stgn.jetbrainscloud.com".into()),
+            air_web_url: env::var(AIR_WEB_URL_ENV_NAME)
+                .unwrap_or("https://air.stgn.jetbrains.cloud".into()),
         }
     }
 
@@ -626,7 +634,50 @@ impl EnvConfig {
             agent_spawner_ws_url: "wss://api.jetbrains.cloud/agent-spawner/acp".into(),
             oauth_base_url: "https://oauth.account.jetbrains.com/oauth2".into(),
             jcp_api_url: "https://api.jetbrains.cloud".into(),
+            air_web_url: "https://air.jetbrains.cloud".into(),
         }
+    }
+
+    /// Base URL of the Agent Spawner REST API
+    pub fn agent_spawner_url(&self) -> String {
+        format!("{}/agent-spawner", self.jcp_api_url.trim_end_matches('/'))
+    }
+
+    /// Base URL of the Air backend REST API
+    pub fn air_backend_url(&self) -> String {
+        format!("{}/air-backend", self.jcp_api_url.trim_end_matches('/'))
+    }
+
+    /// Base URL of the repo-connections REST API
+    pub fn repo_connections_url(&self) -> String {
+        format!(
+            "{}/repo-connections",
+            self.jcp_api_url.trim_end_matches('/')
+        )
+    }
+
+    /// Air web URL of a task
+    pub fn task_url(&self, org_id: &str, task_id: &str) -> String {
+        format!(
+            "{}/org/{org_id}/task/{task_id}/editor",
+            self.air_web_url.trim_end_matches('/')
+        )
+    }
+
+    /// Air web URL of a session that has no task
+    pub fn session_url(&self, org_id: &str, session_id: &str) -> String {
+        format!(
+            "{}/org/{org_id}/session/{session_id}/editor",
+            self.air_web_url.trim_end_matches('/')
+        )
+    }
+
+    /// The Air page where the user connects VCS accounts
+    pub fn integrations_url(&self, org_id: &str) -> String {
+        format!(
+            "{}/org/{org_id}/integrations",
+            self.air_web_url.trim_end_matches('/')
+        )
     }
 }
 

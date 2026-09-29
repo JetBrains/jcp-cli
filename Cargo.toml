@@ -35,6 +35,7 @@ dirs = "6"
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1.89"
 terminal_size = "0.4.4"
+flate2 = "1.1.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
