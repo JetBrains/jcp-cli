@@ -371,13 +371,13 @@ mod tests {
                 json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm"}}),
             ),
             update(
-                json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Hel"}}),
+                json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Hello"}}),
             ),
             update(
-                json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "lo"}}),
+                json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": " there"}}),
             ),
         ]);
-        assert_eq!(out, vec!["user ▎Hi", "thought ▎hmm", "agent ▎Hello"]);
+        assert_eq!(out, vec!["user ▎Hi", "thought ▎hmm", "agent ▎Hello there"]);
     }
 
     #[test]
@@ -458,12 +458,12 @@ mod tests {
     #[test]
     fn hides_session_info_and_usage_updates() {
         let out = render(&[
-            chunk("agent_message_chunk", "Hel"),
+            chunk("agent_message_chunk", "Hello"),
             update(json!({"sessionUpdate": "session_info_update", "title": "Fix"})),
             update(json!({"sessionUpdate": "usage_update", "used": 10, "size": 100})),
-            chunk("agent_message_chunk", "lo"),
+            chunk("agent_message_chunk", " there"),
         ]);
-        assert_eq!(out, vec!["agent ▎Hello"]);
+        assert_eq!(out, vec!["agent ▎Hello there"]);
     }
 
     #[test]
