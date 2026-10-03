@@ -223,6 +223,11 @@ impl Transport for ChannelTransport {
     }
 
     async fn send(&mut self, msg: JsonValue) -> io::Result<()> {
+        if cfg!(debug_assertions) {
+            // Checking that all sent messages are valid JSON RPC payloads
+            serde_json::from_value::<JsonRpcMessage<JsonValue>>(msg.clone())
+                .unwrap_or_else(|e| panic!("Invalid JSON RPC message ({:?}): {:#}", e, msg));
+        }
         self.tx.send(msg).await.map_err(io::Error::other)
     }
 
