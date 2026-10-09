@@ -9,12 +9,10 @@
 //! If this is the case, it is possible to use `#[tokio::test]`, but additional caution needs to be taken
 //! to keep tests fast and reliable.
 
-use std::path::PathBuf;
-
 use agent_client_protocol::{
     AgentResponse, ClientRequest,
     schema::{
-        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest,
+        AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, JsonRpcMessage, LoadSessionRequest,
         NewSessionRequest, PromptRequest, PromptResponse, Request, ResumeSessionRequest,
         SessionNotification, SessionUpdate, StopReason, TextContent,
     },
@@ -22,6 +20,7 @@ use agent_client_protocol::{
 use harness::{StubGitTool, TestHarness};
 use jcp::{EndTurnMeta, GitRemoteInfo, JbAiLegacyToken, JcpToken, MetaField};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 mod harness;
 
@@ -199,7 +198,7 @@ fn invalid_messages_bypass() {
         method: "foo/bar".into(),
         params: Some(json! { true }),
     };
-    let expected_msg = serde_json::to_value(jrpc_request).unwrap();
+    let expected_msg = serde_json::to_value(JsonRpcMessage::wrap(jrpc_request)).unwrap();
 
     // Sending invalid JSON-RPC message from the client
     {

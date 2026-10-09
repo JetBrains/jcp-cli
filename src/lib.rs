@@ -1,9 +1,10 @@
 use agent_client_protocol::{
     self as acp, AgentNotification, ClientResponse, JsonRpcRequest,
     schema::{
-        ContentBlock, ContentChunk, LoadSessionRequest, NewSessionRequest, Notification,
-        PromptRequest, PromptResponse, Request, RequestId, Response, ResumeSessionRequest,
-        SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+        ContentBlock, ContentChunk, JsonRpcMessage, LoadSessionRequest, NewSessionRequest,
+        Notification, PromptRequest, PromptResponse, Request, RequestId, Response,
+        ResumeSessionRequest, SessionId, SessionNotification, SessionUpdate, StopReason,
+        TextContent,
     },
 };
 use async_trait::async_trait;
@@ -377,8 +378,7 @@ impl Adapter {
                 && let Some(message) = git_end_turn_message(remote_info.target)
             {
                 let notification = create_session_update_notification(session_id, message);
-                let value = serde_json::to_value(&notification).map_err(to_io_invalid_data_err)?;
-                self.client.send(value).await?;
+                self.send_to_client(&notification).await?;
             }
         }
         self.client.send(msg).await
@@ -401,9 +401,7 @@ impl Adapter {
                             if let Some(jb_ai_token) = &self.ai_platform_token {
                                 inject_meta(JbAiLegacyToken(jb_ai_token.clone()), &mut jrpc)?
                             };
-                            let modified_request =
-                                serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
-                            self.agent.send(modified_request).await
+                            self.send_to_agent(&jrpc).await
                         }
                         Err(e) => {
                             let msg = Response::<ClientResponse>::Error {
@@ -413,9 +411,7 @@ impl Adapter {
                                     e.to_string(),
                                 ),
                             };
-                            let value =
-                                serde_json::to_value(&msg).map_err(to_io_invalid_data_err)?;
-                            self.client.send(value).await
+                            self.send_to_client(&msg).await
                         }
                     }
                 } else if let Ok(Some(r)) = decode_acp::<PromptRequest>(&jrpc) {
@@ -423,19 +419,13 @@ impl Adapter {
                         .insert(jrpc.id.clone(), r.session_id.clone());
 
                     self.inject_auth_tokens(&mut jrpc)?;
-                    let modified_request =
-                        serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
-                    self.agent.send(modified_request).await
+                    self.send_to_agent(&jrpc).await
                 } else if let Ok(Some(_)) = decode_acp::<LoadSessionRequest>(&jrpc) {
                     self.inject_auth_tokens(&mut jrpc)?;
-                    let modified_request =
-                        serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
-                    self.agent.send(modified_request).await
+                    self.send_to_agent(&jrpc).await
                 } else if let Ok(Some(_)) = decode_acp::<ResumeSessionRequest>(&jrpc) {
                     self.inject_auth_tokens(&mut jrpc)?;
-                    let modified_request =
-                        serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
-                    self.agent.send(modified_request).await
+                    self.send_to_agent(&jrpc).await
                 } else {
                     self.agent.send(msg).await
                 }
@@ -448,6 +438,18 @@ impl Adapter {
                 self.agent.send(msg).await
             }
         }
+    }
+
+    async fn send_to_agent(&mut self, msg: &impl Serialize) -> io::Result<()> {
+        let jrpc = JsonRpcMessage::wrap(msg);
+        let jroc = serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
+        self.agent.send(jroc).await
+    }
+
+    async fn send_to_client(&mut self, msg: &impl Serialize) -> io::Result<()> {
+        let jrpc = JsonRpcMessage::wrap(msg);
+        let jroc = serde_json::to_value(jrpc).map_err(to_io_invalid_data_err)?;
+        self.client.send(jroc).await
     }
 
     fn inject_auth_tokens(&mut self, jrpc: &mut Request<JsonValue>) -> io::Result<()> {
@@ -818,7 +820,6 @@ mod tests {
                 ))),
             };
             let mut message = serde_json::to_string(&request).unwrap();
-            println!("msg - {message}");
             message.push('\n');
 
             IoTransport::new(
